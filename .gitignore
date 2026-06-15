@@ -1,0 +1,12 @@
+# CLion IDE files
+.idea/
+
+# CMake build output
+cmake-build-debug/
+cmake-build-release/
+build/
+
+# Compiled binaries
+*.exe
+*.out
+*.app
