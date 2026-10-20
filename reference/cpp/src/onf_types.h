@@ -23,7 +23,7 @@ namespace ToolType {
 // Represents one data point captured during a stroke
 // Spec Section 7.5
 struct Sample {
-    int32_t x;          // position in coord units (1/100 mm)
+    int32_t x;          // position in coord units (1/100 mm), may be negative
     int32_t y;
     uint8_t pressure;   // 0-255
     uint32_t timestamp; // milliseconds since stroke start
@@ -46,6 +46,7 @@ struct Stroke {
     uint8_t  color_a;
 
     uint16_t tool_type;     // 0=ballpoint, 1=fountain, 2=pencil, 3=highlighter, 4=eraser
+                            // Values 5 and above are reserved (Section 7.4.2)
     uint16_t base_width;    // stroke width in coord units
     uint16_t flags;         // which optional sample fields are present
 
@@ -77,23 +78,31 @@ struct TextObject {
 // Spec Section 6.2
 struct Page {
     std::string id;          // e.g. "p00001"
-    int         order;       // display position
+    int         order = 0;   // display position
 
-    int32_t     width;       // in coord units
-    int32_t     height;
+    int32_t     width  = 0;  // in coord units
+    int32_t     height = 0;
 
-    // Background
-    std::string bg_type;     // "blank", "ruled", "grid", "dotted"
-    std::string bg_color;    // "#RRGGBBAA"
+    // Background - Section 6.3.1
+    std::string bg_type;             // "blank", "ruled", "grid", "dotted"
+    std::string bg_color;            // "#RRGGBBAA"
+    std::string bg_foreground_color; // "#RRGGBBAA", required for ruled, grid, dotted
+    int32_t     bg_spacing = 0;      // coord units, required for ruled, grid, dotted
 
     std::vector<Stroke>     strokes;
     std::vector<TextObject> text_objects;
+
+    // Page-level error (Section 12.3.1). When a page is malformed the reader
+    // keeps the other pages readable and marks this page instead. A page with
+    // readable == false carries no strokes and no text objects.
+    bool        readable = true;
+    std::string error;
 };
 
 // The complete note document
 // Spec Section 6.1
 struct Document {
-    std::string onf_version;  // e.g. "0.1.4"
+    std::string onf_version;  // MAJOR.MINOR.PATCH, e.g. "0.2.0"
     std::string title;
     std::string created_at;   // ISO 8601 UTC string
     std::string modified_at;

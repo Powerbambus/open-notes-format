@@ -15,7 +15,16 @@ void print_document(const Document& doc) {
     for (const Page& page : doc.pages) {
         std::cout << "\n  === Page " << page.id << " (order=" << page.order << ") ===" << std::endl;
         std::cout << "    size:       " << page.width << " x " << page.height << " coord units" << std::endl;
-        std::cout << "    background: " << page.bg_type << " " << page.bg_color << std::endl;
+        if (!page.readable) {
+            std::cout << "    UNREADABLE: " << page.error << std::endl;
+            continue;
+        }
+        std::cout << "    background: " << page.bg_type << " " << page.bg_color;
+        if (page.bg_type != "blank") {
+            std::cout << " foreground " << page.bg_foreground_color
+                      << " spacing " << page.bg_spacing;
+        }
+        std::cout << std::endl;
         std::cout << "    strokes:    " << page.strokes.size() << std::endl;
         std::cout << "    texts:      " << page.text_objects.size() << std::endl;
 
@@ -73,7 +82,7 @@ int main() {
 
     Stroke horizontal;
     horizontal.stroke_id  = 1;
-    horizontal.created_at = 1718358720000;
+    horizontal.created_at = 1781433600000;
     horizontal.color_r    = 0;
     horizontal.color_g    = 0;
     horizontal.color_b    = 0;
@@ -96,7 +105,7 @@ int main() {
 
     Stroke vertical;
     vertical.stroke_id  = 2;
-    vertical.created_at = 1718358720001;
+    vertical.created_at = 1781433600001;
     vertical.color_r    = 0;
     vertical.color_g    = 0;
     vertical.color_b    = 0;
@@ -119,7 +128,7 @@ int main() {
 
     TextObject text;
     text.id             = "t00001";
-    text.created_at     = 1718358720002;
+    text.created_at     = 1781433600002;
     text.x              = 9500;
     text.y              = 10500;
     text.width          = 2000;
@@ -140,12 +149,14 @@ int main() {
     page.height   = 29700;
     page.bg_type  = "dotted";
     page.bg_color = "#FFFFFFFF";
+    page.bg_foreground_color = "#000000FF";
+    page.bg_spacing          = 500;
     page.strokes.push_back(horizontal);
     page.strokes.push_back(vertical);
     page.text_objects.push_back(text);
 
     Document doc;
-    doc.onf_version = "0.1.4";
+    doc.onf_version = "0.2.0";
     doc.title       = "C++ Reference";
     doc.created_at  = "2026-06-14T10:32:00.000Z";
     doc.modified_at = "2026-06-14T10:32:00.000Z";
