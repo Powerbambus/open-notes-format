@@ -533,6 +533,8 @@ void parse_page_meta(const json& meta, Page& page) {
             if (bg.contains("top_margin"))
                 page.bg_top_margin = static_cast<int32_t>(get_int(bg, "top_margin", 0, INT32_MAX));
         }
+        if ((page.bg_type == "ruled" || page.bg_type == "grid") && bg.contains("line_width"))
+            page.bg_line_width = static_cast<int32_t>(get_int(bg, "line_width", 1, INT32_MAX));
         // "blank" and background types unknown to this reader need only "color"
         // (Section 6.3.3).
 

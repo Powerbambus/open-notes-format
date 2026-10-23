@@ -122,6 +122,9 @@ bool validate_document(const Document& doc) {
             if (!is_color_string(page.bg_foreground_color))
                 return fail(where + "background foreground_color is required for this type");
             if (page.bg_top_margin < 0) return fail(where + "background top_margin must not be negative");
+            if (page.bg_line_width < 0) return fail(where + "background line_width must not be negative");
+            if (page.bg_line_width > 0 && page.bg_type != "ruled" && page.bg_type != "grid")
+                return fail(where + "background line_width is only for ruled and grid");
             if (page.bg_spacing <= 0)
                 return fail(where + "background spacing must be positive");
         }
@@ -469,6 +472,7 @@ json build_page_meta(const Page& page) {
         background["foreground_color"] = page.bg_foreground_color;
         background["spacing"]          = page.bg_spacing;
         if (page.bg_top_margin > 0) background["top_margin"] = page.bg_top_margin;
+        if (page.bg_line_width > 0) background["line_width"] = page.bg_line_width;
     }
 
     return {

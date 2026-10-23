@@ -227,8 +227,8 @@ int main() {
     page.assets.push_back(pdf);
 
     Document doc;
-    doc.onf_version = "0.4.0";
-    doc.generator   = "onf-reference-cpp 0.4.0";
+    doc.onf_version = "0.5.0";
+    doc.generator   = "onf-reference-cpp 0.5.0";
     doc.title       = "C++ Reference";
     doc.created_at  = "2026-06-14T10:32:00.000Z";
     doc.modified_at = "2026-06-14T10:32:00.000Z";

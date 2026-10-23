@@ -56,7 +56,7 @@ Out of scope for v1.0 (may be addressed in future versions):
 
 ## Status
 
-> **This project is in an experimental pre-release stage (specification version 0.4.0).**
+> **This project is in an experimental pre-release stage (specification version 0.5.0).**
 > The specification is incomplete and subject to breaking changes. It stays below version 1.0 on purpose, so that far-reaching changes can be tested.
 > Do not build production software against any document in this repository yet.
 

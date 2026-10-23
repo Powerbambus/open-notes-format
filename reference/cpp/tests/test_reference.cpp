@@ -120,7 +120,7 @@ Bytes make_png(uint32_t width, uint32_t height) {
 const Bytes PDF_BYTES = bytes_of("%PDF-1.7\n% a stand-in for a PDF document\n");
 
 const std::string MANIFEST_TEMPLATE =
-    R"({"onf_version":"0.4.0","title":"T","created_at":"2026-06-14T10:32:00.000Z",)"
+    R"({"onf_version":"0.5.0","title":"T","created_at":"2026-06-14T10:32:00.000Z",)"
     R"("modified_at":"2026-06-14T12:15:00.000Z","pages":[{"id":"p00001","order":1},{"id":"p00002","order":2}]})";
 
 std::string meta_of(const std::string& text_objects, const std::string& assets) {
@@ -266,7 +266,7 @@ void test_appendix_c_vectors() {
 
     // The writer produces exactly the bytes of the specification.
     Document doc;
-    doc.onf_version = "0.4.0";
+    doc.onf_version = "0.5.0";
     doc.title = "Vectors";
     doc.created_at = doc.modified_at = "2026-06-14T10:32:00.000Z";
     doc.pages.push_back(vector_page());
@@ -278,7 +278,7 @@ void test_appendix_c_vectors() {
 
     // The reader decodes them into the same values.
     std::vector<ZipEntry> entries = {
-        {"manifest.json", bytes_of(R"({"onf_version":"0.4.0","title":"T","created_at":"2026-06-14T10:32:00.000Z","modified_at":"2026-06-14T10:32:00.000Z","pages":[{"id":"p00001","order":1}]})"), true},
+        {"manifest.json", bytes_of(R"({"onf_version":"0.5.0","title":"T","created_at":"2026-06-14T10:32:00.000Z","modified_at":"2026-06-14T10:32:00.000Z","pages":[{"id":"p00001","order":1}]})"), true},
         {"pages/p00001/meta.json", bytes_of(meta_of("", "")), true},
         {"pages/p00001/strokes.bin", strokes_file_of({V1, V2, V3, V4, V5, V6, V7}), false},
     };
@@ -330,7 +330,7 @@ void test_assets_round_trip() {
     const Bytes png = make_png(200, 100);
 
     Document doc;
-    doc.onf_version = "0.4.0";
+    doc.onf_version = "0.5.0";
     doc.title = "Assets";
     doc.created_at = doc.modified_at = "2026-06-14T10:32:00.000Z";
     doc.asset_files.push_back({"png", png});
@@ -566,7 +566,7 @@ void test_structural_limits_in_meta() {
 
 Document small_document() {
     Document doc;
-    doc.onf_version = "0.4.0";
+    doc.onf_version = "0.5.0";
     doc.title = "T";
     doc.created_at = doc.modified_at = "2026-06-14T10:32:00.000Z";
     Page page;
@@ -598,7 +598,7 @@ void test_removed_tool_type() {
         return out;
     };
     auto read_ink = [&](const Bytes& strokes) {
-        write_zip("t_tool4.onf", {{"manifest.json", bytes_of(R"({"onf_version":"0.4.0","title":"T","created_at":"2026-06-14T10:32:00.000Z","modified_at":"2026-06-14T10:32:00.000Z","pages":[{"id":"p00001","order":1}]})"), true},
+        write_zip("t_tool4.onf", {{"manifest.json", bytes_of(R"({"onf_version":"0.5.0","title":"T","created_at":"2026-06-14T10:32:00.000Z","modified_at":"2026-06-14T10:32:00.000Z","pages":[{"id":"p00001","order":1}]})"), true},
                                   {"pages/p00001/meta.json", bytes_of(meta_of("", "")), true},
                                   {"pages/p00001/strokes.bin", strokes, false}});
         return read_ok("t_tool4.onf");
@@ -685,6 +685,45 @@ void test_top_margin() {
         CHECK(!write_onf(doc, "t_margin3.onf"));
     }
     CHECK(read_ok("t_margin2.onf").pages[0].bg_top_margin == 1000);
+}
+
+// Section 6.3: line_width of ruled and grid backgrounds.
+void test_line_width() {
+    auto width_of = [](const std::string& background, bool* readable) {
+        build_onf("t_width.onf", R"({"width":21000,"height":29700,"background":)" + background + R"(,"text_objects":[],"assets":[]})");
+        Document doc = read_ok("t_width.onf");
+        *readable = doc.pages.size() == 2 && doc.pages[0].readable;
+        return *readable ? doc.pages[0].bg_line_width : -1;
+    };
+    const std::string common = R"("color":"#FFFFFFFF","foreground_color":"#000000FF","spacing":500)";
+    bool ok = false;
+    CHECK(width_of(R"({"type":"ruled",)" + common + "}", &ok) == 0 && ok);
+    CHECK(width_of(R"({"type":"ruled",)" + common + R"(,"line_width":8})", &ok) == 8 && ok);
+    CHECK(width_of(R"({"type":"grid",)" + common + R"(,"line_width":2147483647})", &ok) == 2147483647 && ok);
+    // dotted and blank ignore the field, even an invalid one
+    CHECK(width_of(R"({"type":"dotted",)" + common + R"(,"line_width":0})", &ok) == 0 && ok);
+    width_of(R"({"type":"blank","color":"#FFFFFFFF","line_width":-5})", &ok);
+    CHECK(ok);
+    for (const char* bad : {"0", "-1", "2147483648", "\"2\"", "null", "1.5", "[]"}) {
+        width_of(R"({"type":"grid",)" + common + R"(,"line_width":)" + bad + "}", &ok);
+        CHECK(!ok);
+    }
+
+    Document doc = small_document();
+    doc.pages[0].bg_type = "ruled";
+    doc.pages[0].bg_foreground_color = "#000000FF";
+    doc.pages[0].bg_spacing = 500;
+    doc.pages[0].bg_line_width = 6;
+    {
+        QuietCerr quiet;
+        CHECK(write_onf(doc, "t_width2.onf"));
+        doc.pages[0].bg_line_width = -1;
+        CHECK(!write_onf(doc, "t_width3.onf"));
+        doc.pages[0].bg_line_width = 6;
+        doc.pages[0].bg_type = "dotted";
+        CHECK(!write_onf(doc, "t_width4.onf"));
+    }
+    CHECK(read_ok("t_width2.onf").pages[0].bg_line_width == 6);
 }
 
 void test_manifest_dates() {
@@ -783,6 +822,7 @@ int main() {
     test_removed_tool_type();
     test_writer_rejects_removed_tool_type();
     test_top_margin();
+    test_line_width();
     test_manifest_dates();
     test_writer_refuses();
 

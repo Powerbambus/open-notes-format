@@ -1,5 +1,5 @@
 # ONF Reference Implementation — C++
-A reference implementation of the [OpenNotes Format](../../SPECIFICATION.md) (ONF) v0.4.0, written in C++20.
+A reference implementation of the [OpenNotes Format](../../SPECIFICATION.md) (ONF) v0.5.0, written in C++20.
 This code exists to demonstrate how the format works in practice. It is not a production library. Anyone implementing ONF in any language can read this code alongside the specification to understand how the binary encoding, ZIP structure, and JSON metadata fit together.
 
 ## What it does
@@ -47,7 +47,7 @@ Reading output.onf...
 Read OK.
 
 === Document ===
-  version:     0.4.0
+  version:     0.5.0
   title:       C++ Reference
   ...
 ```
@@ -137,6 +137,7 @@ This implementation covers:
 - Tilt and azimuth sample fields (Section 7.5.1), and the flags `NO_TAPER_START` and `NO_TAPER_END` (Section 7.4.3)
 - Strokes and shapes with tool type `4`, the line eraser of earlier versions, are parsed and skipped (Section 7.4.2). Erasing is the job of an application (Section 7.6.1); this implementation has no erase function
 - The optional `top_margin` of `ruled`, `grid` and `dotted` backgrounds (Section 6.3.1)
+- The optional `line_width` of `ruled` and `grid` backgrounds (Section 6.3.1). `dotted` and `blank` ignore it
 - `SHAPE` chunks with ellipse, rectangle, line, and triangle (Section 7.9). Unknown shape types are skipped. Strokes and shapes are kept in one sequence (`Page::ink`) in file order.
 - Text object `spans` (Section 8.3.1), validated on read and write
 - Accumulated sample values are range-checked per Section 7.5.2
@@ -151,4 +152,4 @@ This implementation covers:
 
 It does not cover: rendering of any kind (so the painter's order of Section 3.4, tool rendering, shape rendering, text layout, and fonts are not implemented), rendering of images and PDF pages, so also the annotations of Section 9.4.4, the PDF page count and encryption of a PDF (these need a PDF parser), a `thumbnail.png` (Section 4.3), ZIP64 handling beyond what libzip does automatically, and font substitution or other host application events. These are left as extensions for anyone building on this reference.
 
-The reference implementation reads and writes ONF v0.4.0 only. Files written against earlier versions are not readable: v0.2.0 files carry a `strokes.bin` version `1` with a different stroke header, and v0.1.4 files additionally use a different sample encoding for the first sample of a stroke.
+The reference implementation reads and writes ONF v0.5.0 only. Files written against earlier versions are not readable: v0.2.0 files carry a `strokes.bin` version `1` with a different stroke header, and v0.1.4 files additionally use a different sample encoding for the first sample of a stroke.

@@ -201,6 +201,7 @@ struct Page {
     std::string bg_foreground_color; // "#RRGGBBAA", required for ruled, grid, dotted
     int32_t     bg_spacing = 0;      // coord units, required for ruled, grid, dotted
     int32_t     bg_top_margin = 0;   // coord units, optional, free area at the top (Section 6.3.2)
+    int32_t     bg_line_width = 0;   // coord units, ruled and grid only, 0 = absent (1 physical pixel, Section 6.3.2)
 
     std::vector<Ink>        ink;     // strokes and shapes in file order
     std::vector<TextObject> text_objects;
@@ -216,7 +217,7 @@ struct Page {
 // The complete note document
 // Spec Section 6.1
 struct Document {
-    std::string onf_version;  // MAJOR.MINOR.PATCH, e.g. "0.4.0"
+    std::string onf_version;  // MAJOR.MINOR.PATCH, e.g. "0.5.0"
     std::optional<std::string> generator;  // Section 6.1.2, informational
     std::string title;
     std::string created_at;   // ISO 8601 UTC string

@@ -1,5 +1,5 @@
 # OpenNotes Format 
-Version 0.4.0
+Version 0.5.0
 ## 1. Introduction
 The OpenNotes Format (ONF) is an open, vendor-neutral file format for handwritten digital notes. It is designed to store pen strokes, shapes, text, images, and PDF pages in a self-contained file that any conforming application can read and write, without dependency on proprietary software or services. ONF prioritises compact file size, efficient parsing, and long-term accessibility.
 ### 1.1 Purpose
@@ -310,7 +310,7 @@ The manifest is the entry point of every ONF file. It is located at `manifest.js
 #### 6.1.1 Manifest Structure
 ```json
 {
-    "onf_version": "0.4.0",
+    "onf_version": "0.5.0",
     "generator": "onf-tools 0.3.0",
     "title": "Lecture Notes",
     "created_at": "2026-06-14T10:32:00.000Z",
@@ -378,6 +378,7 @@ The page background is rendered beneath all layers (Section 3.4). It does not be
 | `foreground_color` | string | REQUIRED for `ruled`, `grid`, `dotted` | The color of lines or dots in the format `#RRGGBBAA`. |
 | `spacing` | integer | REQUIRED for `ruled`, `grid`, `dotted` | The distance between lines or dots in `coord` units. MUST be a positive integer. |
 | `top_margin` | integer | OPTIONAL | Only for `ruled`, `grid`, and `dotted`; for other types a reader ignores it. The height in `coord` units of the area at the top of the page that is free of pattern elements (Section 6.3.2). MUST be at least `0` and MUST NOT exceed `2147483647`. Default: `0`. |
+| `line_width` | integer | OPTIONAL | Only for `ruled` and `grid`; for other types a reader ignores it. The width of the lines in `coord` units (Section 6.3.2). MUST be at least `1` and MUST NOT exceed `2147483647`. Default: absent, which means a line width of 1 physical display pixel. |
 
 Writers MUST explicitly state all required fields for the chosen background type. Readers MUST NOT apply default values for missing required fields. A reader encountering a missing required background field MUST treat the file as malformed.
 #### 6.3.2 Background Rendering Rules
@@ -399,7 +400,7 @@ The page surface is filled with `color`. Horizontal lines are drawn across the f
 - No line is drawn at a Y coordinate less than `top_margin`.
 
 Line appearance:
-- Width: 1 physical display pixel, not scaled with document zoom.
+- Width: `line_width` in `coord` units, scaled with the document zoom. If `line_width` is absent: 1 physical display pixel, not scaled with document zoom.
 - Color: `foreground_color` at 20% opacity.
 
 **Grid**
@@ -411,7 +412,7 @@ The page surface is filled with `color`. Vertical and horizontal lines are drawn
 - No horizontal line is drawn at a Y coordinate less than `top_margin`. The vertical lines begin at the Y coordinate `top_margin` instead of at the top edge of the page.
 
 Line appearance:
-- Width: 1 physical display pixel, not scaled with document zoom.
+- Width: `line_width` in `coord` units, scaled with the document zoom. If `line_width` is absent: 1 physical display pixel, not scaled with document zoom.
 - Color: `foreground_color` at 20% opacity.
 
 **Dotted**
@@ -453,7 +454,7 @@ magic bytes MUST treat the file as invalid and MUST NOT attempt to parse
 further.
 The `version` field is an independent binary format revision counter. It
 is not related to the `onf_version` string in `manifest.json`. In ONF
-versions 0.3.0, 0.3.1, and 0.4.0 this field MUST be `2`. Releases of MAJOR version `0` are
+versions 0.3.0, 0.3.1, 0.4.0, and 0.5.0 this field MUST be `2`. Releases of MAJOR version `0` are
 experimental and may change the binary layout incompatibly (Section 10.1);
 the field is incremented in that case so that a reader recognises files of
 a different layout. See Section 10.7.
@@ -931,7 +932,7 @@ be deleted by a reader.
 Text objects are drawn in the order of the entries in the `text_objects` array, from first to last, within their layer (Section 3.4). Writers MUST list text objects from bottom to top. A reader MUST NOT reorder them.
 ## 9. Embedded Assets
 ### 9.1 Overview
-Assets are binary resources embedded directly within the ONF archive. In v0.4.0 of this specification, assets are limited to images and PDF documents. Assets are stored in the `assets/` directory at the archive root and referenced by pages via the `assets` array in `meta.json`.
+Assets are binary resources embedded directly within the ONF archive. In v0.5.0 of this specification, assets are limited to images and PDF documents. Assets are stored in the `assets/` directory at the archive root and referenced by pages via the `assets` array in `meta.json`.
 An asset is stored once in the archive regardless of how many pages reference it. If the same image or PDF document appears on three pages, it is stored as a single file in `assets/` and referenced three times.
 ### 9.2 Asset Storage
 #### 9.2.1 File Naming
@@ -1039,7 +1040,7 @@ ONF uses semantic versioning in the format `MAJOR.MINOR.PATCH`. The version is s
 Examples of valid version strings:
 | String | Meaning |
 |---|---|
-| `0.4.0` | Pre-release version (MAJOR version `0`), no stability guarantees |
+| `0.5.0` | Pre-release version (MAJOR version `0`), no stability guarantees |
 | `1.0.0` | First stable release |
 | `1.1.0` | Stable release with additive changes |
 | `2.0.0` | Second stable release with breaking changes |
@@ -1080,7 +1081,7 @@ Deprecated fields will be marked as deprecated in the specification for at least
 Within a MAJOR version of `1` or higher, the layout of the body of a chunk type that is already defined MUST NOT change. New functionality is added through new chunk types, new JSON keys, or additional data after the defined fields of a chunk body (Section 7.3.2). This is what allows readers to skip unknown chunks safely.
 ### 10.7 Version Identification in strokes.bin
 The `version` field in the `strokes.bin` file header defined in Section 7.2 is an independent binary format revision counter, stored as a `u16`. It is not related to the semantic version string in `manifest.json`.
-In ONF versions 0.3.0, 0.3.1, and 0.4.0 this field MUST be `2`. Version 0.4.0 removed the line eraser (tool type `4`) and defined the bits 5 and 6 of the stroke flags, which were reserved, without changing the layout of any chunk. The opacity of the highlighter tool is the alpha value of `color` (Section 7.7.5), whereas ONF 0.2.0 fixed it at 40%. This changes no part of the binary layout, so the value stays `2`. The value `1` was used by earlier drafts of this specification, whose chunk layouts differ from the layout of value `2` (in particular the `STROKE` header and the `SHAPE` chunk). Because MAJOR version `0` is experimental, later releases may change the layout again and increment the field.
+In ONF versions 0.3.0, 0.3.1, 0.4.0, and 0.5.0 this field MUST be `2`. Version 0.5.0 added the optional background field `line_width`. Version 0.4.0 removed the line eraser (tool type `4`) and defined the bits 5 and 6 of the stroke flags, which were reserved, without changing the layout of any chunk. The opacity of the highlighter tool is the alpha value of `color` (Section 7.7.5), whereas ONF 0.2.0 fixed it at 40%. This changes no part of the binary layout, so the value stays `2`. The value `1` was used by earlier drafts of this specification, whose chunk layouts differ from the layout of value `2` (in particular the `STROKE` header and the `SHAPE` chunk). Because MAJOR version `0` is experimental, later releases may change the layout again and increment the field.
 The handling of a `version` field that differs from the value a reader implements is defined in Section 7.2. The forward compatibility rules of Section 10.5 do not apply to such a `version` value.
 ## 11. Conformance
 ### 11.1 Overview
@@ -1537,7 +1538,7 @@ All dimensions are given in `coord` units (1/100 mm). Portrait orientation is as
 Writers using custom dimensions MUST still define `width` and `height` explicitly in `meta.json`. The values in this table are provided for reference only and carry no special meaning within the format.
 
 ---
-### Appendix C: Test Vectors for Version 0.4.0
+### Appendix C: Test Vectors for Version 0.5.0
 All vectors are complete chunks including the 6-byte chunk frame. Colors are RGBA. `chunk_length` is the length of the body without the frame.
 #### C.1 Stroke vectors
 
