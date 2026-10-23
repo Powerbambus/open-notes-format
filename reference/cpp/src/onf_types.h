@@ -14,6 +14,8 @@ namespace StrokeFlags {
     constexpr uint16_t NO_PRESSURE     = 1 << 2;  // bit 2
     constexpr uint16_t NO_TIMESTAMP    = 1 << 3;  // bit 3
     constexpr uint16_t HAS_CREATED_AT  = 1 << 4;  // bit 4, derived from Stroke::created_at by the writer
+    constexpr uint16_t NO_TAPER_START  = 1 << 5;  // bit 5, no fountain pen taper at the start (Section 7.7.3.1)
+    constexpr uint16_t NO_TAPER_END    = 1 << 6;  // bit 6, no fountain pen taper at the end
 }
 
 // Tool types for Stroke.tool_type - Spec Section 7.4.2
@@ -22,7 +24,7 @@ namespace ToolType {
     constexpr uint16_t FOUNTAIN   = 1;
     constexpr uint16_t PENCIL     = 2;
     constexpr uint16_t HIGHLIGHTER = 3;
-    constexpr uint16_t LINE_ERASER = 4;
+    constexpr uint16_t REMOVED = 4;  // the line eraser of ONF 0.3.0 and 0.3.1: never written, skipped by readers (Section 7.4.2)
 }
 
 // Shape types for Shape.shape_type - Spec Section 7.9.3
@@ -63,7 +65,7 @@ struct Stroke {
     uint8_t  color_b;
     uint8_t  color_a;
 
-    uint16_t tool_type;     // 0=ballpoint, 1=fountain, 2=pencil, 3=highlighter, 4=eraser
+    uint16_t tool_type;     // 0=ballpoint, 1=fountain, 2=pencil, 3=highlighter
                             // Values 5 and above are reserved (Section 7.4.2)
     uint16_t base_width;    // stroke width in coord units
     uint16_t flags;         // which optional sample fields are present
@@ -137,6 +139,53 @@ struct TextObject {
     std::vector<Span> spans;
 };
 
+// Region of an image that is shown - Spec Sections 9.3.2 and 9.4.5.
+// Whole pixels of the decoded image, origin at the top left.
+struct Crop {
+    int32_t x;       // at least 0
+    int32_t y;       // at least 0
+    int32_t width;   // at least 1
+    int32_t height;  // at least 1
+};
+
+// What the reader found out about the file behind a placement - Spec Sections 9.2 and 9.4.5.
+// None of these is a malformed condition: the page stays readable and a host application
+// would draw a placeholder (this reference implementation has no such host).
+enum class AssetStatus {
+    Ok,
+    Missing,            // the file is not in the archive (Section 9.3.2)
+    UnsupportedFormat,  // the extension is not one of Section 9.2.2
+    Corrupt,            // hash mismatch, wrong magic bytes, too many pixels, crop outside the image
+};
+
+// One placement of an asset on a page - Spec Section 9.3
+struct AssetRef {
+    std::string id;
+    uint16_t    layer;                    // 1 to 65535 (Section 5.6)
+    std::optional<uint64_t> created_at;
+
+    std::string hash;                     // 64 lowercase hex digits: SHA-256 of the file
+    std::string extension;                // webp, png, jpg or pdf for files this version can embed
+    std::optional<int32_t> pdf_page;      // required for pdf, first page is 1
+    std::optional<Crop>    crop;          // image assets only
+
+    int32_t     x;
+    int32_t     y;
+    int32_t     width;
+    int32_t     height;
+
+    // Set by the reader, ignored by the writer
+    AssetStatus status = AssetStatus::Ok;
+    std::string status_detail;
+};
+
+// An asset file inside the archive. The writer names it assets/<SHA-256 of bytes>.<extension>
+// (Section 9.2.1). The reader fills Document::asset_files with the files that placements use.
+struct AssetFile {
+    std::string          extension;
+    std::vector<uint8_t> bytes;
+};
+
 // Represents one canvas in the document
 // Spec Section 6.2
 struct Page {
@@ -151,13 +200,15 @@ struct Page {
     std::string bg_color;            // "#RRGGBBAA"
     std::string bg_foreground_color; // "#RRGGBBAA", required for ruled, grid, dotted
     int32_t     bg_spacing = 0;      // coord units, required for ruled, grid, dotted
+    int32_t     bg_top_margin = 0;   // coord units, optional, free area at the top (Section 6.3.2)
 
     std::vector<Ink>        ink;     // strokes and shapes in file order
     std::vector<TextObject> text_objects;
+    std::vector<AssetRef>   assets;  // in file order, bottom to top within a layer
 
     // Page-level error (Section 12.3.1). When a page is malformed the reader
     // keeps the other pages readable and marks this page instead. A page with
-    // readable == false carries no ink and no text objects.
+    // readable == false carries no ink, no text objects and no assets.
     bool        readable = true;
     std::string error;
 };
@@ -165,11 +216,12 @@ struct Page {
 // The complete note document
 // Spec Section 6.1
 struct Document {
-    std::string onf_version;  // MAJOR.MINOR.PATCH, e.g. "0.3.0"
+    std::string onf_version;  // MAJOR.MINOR.PATCH, e.g. "0.4.0"
     std::optional<std::string> generator;  // Section 6.1.2, informational
     std::string title;
     std::string created_at;   // ISO 8601 UTC string
     std::string modified_at;
 
     std::vector<Page> pages;
+    std::vector<AssetFile> asset_files;  // each file once, however often it is placed
 };

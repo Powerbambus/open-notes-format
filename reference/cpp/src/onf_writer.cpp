@@ -1,11 +1,14 @@
 #include "onf_writer.h"
 #include "onf_types.h"
+#include "asset_check.h"
+#include "sha256.h"
 
 #include <zip.h>
 #include <nlohmann/json.hpp>
 
 #include <vector>
 #include <string>
+#include <map>
 #include <set>
 #include <regex>
 #include <iostream>
@@ -94,6 +97,18 @@ bool validate_document(const Document& doc) {
         seen_order[page.order] = true;
     }
 
+    // Sections 9.2.1 to 9.2.3, 9.5: the files that will be embedded, by archive name. Each one must be a
+    // supported format and must really be one (magic bytes, size limit).
+    std::map<std::string, AssetInfo> embedded;
+    for (const AssetFile& file : doc.asset_files) {
+        const std::string name = sha256_hex(file.bytes) + "." + file.extension;
+        if (!is_supported_asset_extension(file.extension))
+            return fail("asset " + name + ": the format must be one of webp, png, jpg, pdf");
+        AssetInfo info = check_asset_content(file.extension, file.bytes);
+        if (!info.ok) return fail("asset " + name + ": " + info.problem);
+        embedded[name] = info;
+    }
+
     for (const Page& page : doc.pages) {
         const std::string where = "page " + page.id + ": ";
         if (page.width <= 0 || page.height <= 0) return fail(where + "width and height must be positive");
@@ -106,6 +121,7 @@ bool validate_document(const Document& doc) {
         if (page.bg_type != "blank") {
             if (!is_color_string(page.bg_foreground_color))
                 return fail(where + "background foreground_color is required for this type");
+            if (page.bg_top_margin < 0) return fail(where + "background top_margin must not be negative");
             if (page.bg_spacing <= 0)
                 return fail(where + "background spacing must be positive");
         }
@@ -120,11 +136,11 @@ bool validate_document(const Document& doc) {
                 if (st->layer < MIN_LAYER) return fail(sw + "layer must be between 1 and 65535");
                 if (st->created_at && *st->created_at > static_cast<uint64_t>(MAX_JSON_INT))
                     return fail(sw + "created_at too large");
-                if (st->tool_type > ToolType::LINE_ERASER) return fail(sw + "tool type is reserved");
+                if (st->tool_type > ToolType::HIGHLIGHTER) return fail(sw + "tool type must be between 0 and 3");
                 if (st->base_width == 0) return fail(sw + "base_width must be greater than 0");
                 if (st->flags & ~(StrokeFlags::HAS_TILT | StrokeFlags::HAS_AZIMUTH |
                                   StrokeFlags::NO_PRESSURE | StrokeFlags::NO_TIMESTAMP |
-                                  StrokeFlags::HAS_CREATED_AT))
+                                  StrokeFlags::HAS_CREATED_AT | StrokeFlags::NO_TAPER_START | StrokeFlags::NO_TAPER_END))
                     return fail(sw + "undefined flag bits must be 0");
                 if (st->samples.empty()) return fail(sw + "sample_count must be greater than 0");
                 const bool tilt = st->flags & StrokeFlags::HAS_TILT;
@@ -203,6 +219,39 @@ bool validate_document(const Document& doc) {
                 if (sp.generic_family && *sp.generic_family != "sans-serif" &&
                     *sp.generic_family != "serif" && *sp.generic_family != "monospace")
                     return fail(tw + "span generic_family must be sans-serif, serif or monospace");
+            }
+        }
+
+        // Sections 5.6, 9.2.2, 9.3.2, 9.4.5, 9.5
+        std::set<std::string> asset_ids;
+        for (const AssetRef& a : page.assets) {
+            const std::string aw = where + "asset " + a.id + ": ";
+            if (utf8_length(a.id) > MAX_STRING_CHARS) return fail(aw + "id too long");
+            if (!asset_ids.insert(a.id).second) return fail(aw + "duplicate id");
+            if (a.layer < MIN_LAYER) return fail(aw + "layer must be between 1 and 65535");
+            if (a.created_at && *a.created_at > static_cast<uint64_t>(MAX_JSON_INT))
+                return fail(aw + "created_at too large");
+            if (a.width <= 0 || a.height <= 0) return fail(aw + "width and height must be greater than 0");
+            if (!is_supported_asset_extension(a.extension))
+                return fail(aw + "extension must be one of webp, png, jpg, pdf");
+
+            if (a.extension == "pdf") {
+                if (!a.pdf_page || *a.pdf_page < 1) return fail(aw + "pdf_page is required for pdf and must be 1 or more");
+                if (a.crop) return fail(aw + "crop must not be written for pdf");
+            } else if (a.pdf_page) {
+                return fail(aw + "pdf_page must not be written for an image");
+            }
+
+            auto file = embedded.find(a.hash + "." + a.extension);
+            if (file == embedded.end())
+                return fail(aw + "the file " + a.hash + "." + a.extension + " is not among the asset files");
+
+            if (a.crop) {
+                if (a.crop->x < 0 || a.crop->y < 0) return fail(aw + "crop x and y must be at least 0");
+                if (a.crop->width < 1 || a.crop->height < 1) return fail(aw + "crop width and height must be at least 1");
+                if (int64_t(a.crop->x) + a.crop->width > file->second.width ||
+                    int64_t(a.crop->y) + a.crop->height > file->second.height)
+                    return fail(aw + "the crop region must lie inside the image");  // Section 9.4.5
             }
         }
     }
@@ -392,6 +441,25 @@ json build_page_meta(const Page& page) {
         text_objects_array.push_back(obj);
     }
 
+    // Asset placements - Section 9.3.2
+    json assets_array = json::array();
+    for (const AssetRef& a : page.assets) {
+        json obj = {
+            {"id",        a.id},
+            {"layer",     a.layer},
+            {"hash",      a.hash},
+            {"extension", a.extension},
+            {"x",         a.x},
+            {"y",         a.y},
+            {"width",     a.width},
+            {"height",    a.height}
+        };
+        if (a.pdf_page)   obj["pdf_page"]   = *a.pdf_page;
+        if (a.crop)       obj["crop"]       = {{"x", a.crop->x}, {"y", a.crop->y}, {"width", a.crop->width}, {"height", a.crop->height}};
+        if (a.created_at) obj["created_at"] = *a.created_at;
+        assets_array.push_back(obj);
+    }
+
     // All required background fields are written explicitly - Section 6.3.1
     json background = {
         {"type",  page.bg_type},
@@ -400,6 +468,7 @@ json build_page_meta(const Page& page) {
     if (page.bg_type != "blank") {
         background["foreground_color"] = page.bg_foreground_color;
         background["spacing"]          = page.bg_spacing;
+        if (page.bg_top_margin > 0) background["top_margin"] = page.bg_top_margin;
     }
 
     return {
@@ -407,7 +476,7 @@ json build_page_meta(const Page& page) {
         {"height",       page.height},
         {"background",   background},
         {"text_objects", text_objects_array},
-        {"assets",       json::array()}
+        {"assets",       assets_array}
     };
 }
 
@@ -426,7 +495,7 @@ bool write_onf(const Document& doc, const std::string& output_path) {
     std::vector<std::string>          string_buffers;
     std::vector<std::vector<uint8_t>> binary_buffers;
     string_buffers.reserve(1 + doc.pages.size());
-    binary_buffers.reserve(doc.pages.size());
+    binary_buffers.reserve(doc.pages.size() + doc.asset_files.size());
 
     // --- manifest.json (DEFLATE compressed, Section 4.5) ---
     string_buffers.push_back(build_manifest(doc).dump(4));
@@ -464,6 +533,19 @@ bool write_onf(const Document& doc, const std::string& output_path) {
     // The assets/ directory is required even without assets (Section 4.2).
     // libzip stores it as an explicit directory entry "assets/".
     zip_dir_add(archive, "assets", ZIP_FL_OVERWRITE);
+
+    // --- asset files, named by the SHA-256 of their content (Section 9.2.1), stored without
+    // compression because they are already compressed (Section 4.5). The same file is stored once.
+    std::set<std::string> written;
+    for (const AssetFile& file : doc.asset_files) {
+        const std::string path = "assets/" + sha256_hex(file.bytes) + "." + file.extension;
+        if (!written.insert(path).second) continue;
+        binary_buffers.push_back(file.bytes);
+        const std::vector<uint8_t>& data = binary_buffers.back();
+        zip_source_t* src = zip_source_buffer(archive, data.data(), data.size(), 0);
+        zip_int64_t idx = zip_file_add(archive, path.c_str(), src, ZIP_FL_OVERWRITE);
+        zip_set_file_compression(archive, idx, ZIP_CM_STORE, 0);
+    }
 
     zip_close(archive);
     return true;

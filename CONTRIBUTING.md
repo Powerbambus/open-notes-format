@@ -3,11 +3,11 @@ Thank you for your interest in ONF. This document explains how to contribute eff
 
 ---
 ## What this project is
-ONF is an open specification for a file format for handwritten digital notes. This repository contains the specification document only, not an application or a library. The goal is a vendor-neutral standard that any developer can implement, similar to ODF for word processing.
+ONF is an open specification for a file format for handwritten digital notes. This repository contains the specification document and a small C++ reference implementation (`reference/cpp`) that shows how the format works. It is not an application or a library. The goal is a vendor-neutral standard that any developer can implement, similar to ODF for word processing.
 
 ---
 ## Current status
-The specification is at **v0.3.0**. This means:
+The specification is at **v0.4.0**. This means:
 - The core design is in place but not yet frozen
 - Version 0.x is deliberately experimental: it exists so that far-reaching changes can be tested before 1.0.0
 - Any 0.x release may break the format, including the binary layout, and files of one 0.x version may not be readable by another
@@ -45,17 +45,17 @@ A useful issue has three parts:
 **3. Suggestion:** if you have one, what you think the fix should be. This is optional but helpful.
 
 Example of a good issue title:
-> Section 7.4.4 — line eraser behaviour on front layer is undefined
+> Section 7.6.1: it is unclear how a shape is erased
 
 Example of a less useful issue title:
-> The eraser section is confusing
+> The erasing section is confusing
 
 ---
 ## What is not welcome yet
 The following are not appropriate contributions at this stage:
 **Pull requests to the specification text:** The spec is not yet stable enough to accept text changes from outside. All changes to the specification are made by the project author based on feedback received in issues. This will change when the spec reaches v1.0.0.
 **New feature proposals:** The scope of v1.0.0 is defined. Feature requests for things outside that scope (collaboration, encryption, audio, video) are noted but will not be acted on until after v1.0.0 is published. You are welcome to open an issue to record the request for future consideration.
-**API or library contributions:** This repository contains only the specification. A reference implementation and API library are planned for after v1.0.0. Code contributions are not accepted here.
+**API or library contributions:** The reference implementation in `reference/cpp` is a demonstration for readers of the specification, not a library. An API library is planned for after v1.0.0. Code contributions are not accepted here.
 
 ---
 ## Code of conduct

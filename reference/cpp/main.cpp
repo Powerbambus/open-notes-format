@@ -1,4 +1,6 @@
 #include <iostream>
+#include <string>
+#include "src/sha256.h"
 #include "src/onf_writer.h"
 #include "src/onf_reader.h"
 #include "src/onf_types.h"
@@ -23,11 +25,12 @@ void print_document(const Document& doc) {
         std::cout << "    background: " << page.bg_type << " " << page.bg_color;
         if (page.bg_type != "blank") {
             std::cout << " foreground " << page.bg_foreground_color
-                      << " spacing " << page.bg_spacing;
+                      << " spacing " << page.bg_spacing << " top_margin " << page.bg_top_margin;
         }
         std::cout << std::endl;
         std::cout << "    ink:        " << page.ink.size() << std::endl;
         std::cout << "    texts:      " << page.text_objects.size() << std::endl;
+        std::cout << "    assets:     " << page.assets.size() << std::endl;
 
         for (const Ink& item : page.ink) {
             if (const Stroke* stroke = std::get_if<Stroke>(&item)) {
@@ -92,6 +95,18 @@ void print_document(const Document& doc) {
             std::cout << "      bold:           " << (text.bold   ? "true" : "false") << std::endl;
             std::cout << "      italic:         " << (text.italic ? "true" : "false") << std::endl;
             std::cout << "      spans:          " << text.spans.size() << std::endl;
+        }
+
+        static const char* status_names[] = {"ok", "missing", "unsupported format", "corrupt"};
+        for (const AssetRef& asset : page.assets) {
+            std::cout << "\n    --- Asset id=" << asset.id << " ---" << std::endl;
+            std::cout << "      layer:          " << asset.layer << std::endl;
+            std::cout << "      file:           " << asset.hash.substr(0, 12) << "... ." << asset.extension << std::endl;
+            if (asset.pdf_page) std::cout << "      pdf_page:       " << *asset.pdf_page << std::endl;
+            if (asset.crop)
+                std::cout << "      crop:           x=" << asset.crop->x << " y=" << asset.crop->y << " "
+                          << asset.crop->width << " x " << asset.crop->height << std::endl;
+            std::cout << "      status:         " << status_names[static_cast<int>(asset.status)] << std::endl;
         }
     }
 }
@@ -189,18 +204,36 @@ int main() {
     page.bg_color = "#FFFFFFFF";
     page.bg_foreground_color = "#000000FF";
     page.bg_spacing          = 500;
+    page.bg_top_margin       = 1000;  // the first row of dots is at Y = 1000, none above (Section 6.3.2)
     page.ink.push_back(horizontal);
     page.ink.push_back(vertical);
     page.ink.push_back(circle);
     page.text_objects.push_back(text);
 
+    // A placement of page 2 of a PDF document. The file here is only a stand-in that starts
+    // with the magic bytes "%PDF-"; the reader checks no more than that (Section 9.2.3).
+    const std::string pdf_text = "%PDF-1.7\n% a stand-in for a PDF document\n";
+    AssetFile pdf_file{"pdf", std::vector<uint8_t>(pdf_text.begin(), pdf_text.end())};
+    AssetRef pdf;
+    pdf.id        = "a00001";
+    pdf.layer     = 1;
+    pdf.hash      = sha256_hex(pdf_file.bytes);
+    pdf.extension = "pdf";
+    pdf.pdf_page  = 2;
+    pdf.x         = 15000;
+    pdf.y         = 2000;
+    pdf.width     = 5000;
+    pdf.height    = 7000;
+    page.assets.push_back(pdf);
+
     Document doc;
-    doc.onf_version = "0.3.0";
-    doc.generator   = "onf-reference-cpp 0.3.0";
+    doc.onf_version = "0.4.0";
+    doc.generator   = "onf-reference-cpp 0.4.0";
     doc.title       = "C++ Reference";
     doc.created_at  = "2026-06-14T10:32:00.000Z";
     doc.modified_at = "2026-06-14T10:32:00.000Z";
     doc.pages.push_back(page);
+    doc.asset_files.push_back(pdf_file);
 
     if (!write_onf(doc, output_path)) {
         std::cerr << "Write failed." << std::endl;

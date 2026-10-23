@@ -1,5 +1,7 @@
 #include "onf_reader.h"
 #include "onf_types.h"
+#include "asset_check.h"
+#include "sha256.h"
 
 #include <zip.h>
 #include <nlohmann/json.hpp>
@@ -9,6 +11,7 @@
 #include <cstdint>
 #include <iostream>
 #include <optional>
+#include <cstdio>
 #include <regex>
 #include <variant>
 #include <set>
@@ -224,8 +227,6 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
                 throw MalformedError("strokes.bin: layer is 0");
             if (shape.base_width == 0)
                 throw MalformedError("strokes.bin: base_width is 0");
-            if (shape.tool_type == ToolType::LINE_ERASER)
-                throw MalformedError("strokes.bin: SHAPE with tool_type 4");
             if (!stroke_ids.insert(shape.stroke_id).second)
                 throw MalformedError("strokes.bin: duplicate stroke_id");
 
@@ -240,7 +241,9 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
             }
 
             // Bytes left in the chunk body after the parameters are ignored.
-            page.ink.push_back(std::move(shape));
+            // Tool type 4 was the line eraser of ONF 0.3.0 and 0.3.1: the shape is parsed and checked,
+            // then skipped (Section 7.4.2).
+            if (shape.tool_type != ToolType::REMOVED) page.ink.push_back(std::move(shape));
             offset = body_end;
             continue;
         }
@@ -330,7 +333,8 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
         }
 
         // Bytes left in the chunk body after the last sample are ignored.
-        page.ink.push_back(std::move(stroke));
+        // Tool type 4 was the line eraser of ONF 0.3.0 and 0.3.1: parsed and checked, then skipped.
+        if (stroke.tool_type != ToolType::REMOVED) page.ink.push_back(std::move(stroke));
         offset = body_end;
     }
 }
@@ -366,6 +370,11 @@ struct DepthChecker : nlohmann::json_sax<json> {
 };
 
 json parse_json(const std::vector<uint8_t>& buf) {
+    // Section 2.3.5: a JSON file of an ONF archive must not begin with a byte order mark.
+    // nlohmann/json would skip it silently, so it has to be checked here.
+    if (buf.size() >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF)
+        throw MalformedError("JSON file begins with a byte order mark");
+
     // The nesting depth is checked first, so the parser below never builds a
     // structure that is deeper than MAX_JSON_DEPTH. A parse callback would
     // enforce the same limit, but makes nlohmann/json quadratic in the number
@@ -465,6 +474,47 @@ void parse_spans(const json& spans, size_t content_length, std::vector<Span>& ou
 }
 
 // ---------------------------------------------------------------------------
+// Asset placements - Section 9.3.2
+// ---------------------------------------------------------------------------
+AssetRef parse_asset(const json& a) {
+    static const std::regex hash_re("^[0-9a-f]{64}$");
+
+    AssetRef ref;
+    ref.id    = get_string(a, "id");
+    ref.layer = get_layer(a);
+    if (a.contains("created_at"))
+        ref.created_at = static_cast<uint64_t>(get_int(a, "created_at", 0, MAX_JSON_INT));
+
+    ref.hash = get_string(a, "hash");
+    if (!std::regex_match(ref.hash, hash_re))
+        throw MalformedError("asset hash must be 64 lowercase hexadecimal digits");  // Section 4.6.1
+    ref.extension = get_string(a, "extension");  // an unknown extension is not an error (Section 9.2.2)
+
+    ref.x      = static_cast<int32_t>(get_int(a, "x", INT32_MIN, INT32_MAX));
+    ref.y      = static_cast<int32_t>(get_int(a, "y", INT32_MIN, INT32_MAX));
+    ref.width  = static_cast<int32_t>(get_int(a, "width",  1, INT32_MAX));
+    ref.height = static_cast<int32_t>(get_int(a, "height", 1, INT32_MAX));
+
+    if (ref.extension == "pdf") {
+        // Required for pdf, 1 to 2147483647. For every other extension the field is ignored.
+        ref.pdf_page = static_cast<int32_t>(get_int(a, "pdf_page", 1, INT32_MAX));
+    } else if (a.contains("crop")) {
+        // Only for images; for pdf a reader ignores it. A crop that breaks the rules of
+        // Section 9.3.2 makes the page malformed. Whether the region lies inside the image
+        // can only be checked with the image, which is done by load_assets (Section 9.4.5).
+        const json& c = a.at("crop");
+        if (!c.is_object()) throw MalformedError("crop must be an object");
+        Crop crop;
+        crop.x      = static_cast<int32_t>(get_int(c, "x", 0, INT32_MAX));
+        crop.y      = static_cast<int32_t>(get_int(c, "y", 0, INT32_MAX));
+        crop.width  = static_cast<int32_t>(get_int(c, "width",  1, INT32_MAX));
+        crop.height = static_cast<int32_t>(get_int(c, "height", 1, INT32_MAX));
+        ref.crop = crop;
+    }
+    return ref;
+}
+
+// ---------------------------------------------------------------------------
 // meta.json - Section 6.2
 // ---------------------------------------------------------------------------
 void parse_page_meta(const json& meta, Page& page) {
@@ -480,6 +530,8 @@ void parse_page_meta(const json& meta, Page& page) {
         if (page.bg_type == "ruled" || page.bg_type == "grid" || page.bg_type == "dotted") {
             page.bg_foreground_color = get_color(bg, "foreground_color");
             page.bg_spacing = static_cast<int32_t>(get_int(bg, "spacing", 1, INT32_MAX));
+            if (bg.contains("top_margin"))
+                page.bg_top_margin = static_cast<int32_t>(get_int(bg, "top_margin", 0, INT32_MAX));
         }
         // "blank" and background types unknown to this reader need only "color"
         // (Section 6.3.3).
@@ -487,9 +539,11 @@ void parse_page_meta(const json& meta, Page& page) {
         // Text objects - Section 8
         const json& texts = meta.at("text_objects");
         if (!texts.is_array()) throw MalformedError("text_objects must be an array");
+        std::set<std::string> text_ids;
         for (const auto& t : texts) {
             TextObject text;
             text.id             = get_string(t, "id");
+            if (!text_ids.insert(text.id).second) throw MalformedError("duplicate text object id: " + text.id);
             text.layer          = get_layer(t);
             if (t.contains("created_at"))
                 text.created_at = static_cast<uint64_t>(get_int(t, "created_at", 0, MAX_JSON_INT));
@@ -509,14 +563,16 @@ void parse_page_meta(const json& meta, Page& page) {
             page.text_objects.push_back(std::move(text));
         }
 
-        // Asset placements (Section 9) are not implemented by this reference
-        // implementation, but the field is required and must be an array.
-        // The layer of every placement is validated (Section 5.6).
+        // Asset placements - Section 9.3. Only the placements are read here. Whether the
+        // files exist and are intact is checked later by load_assets (Section 9.2).
         const json& assets = meta.at("assets");
         if (!assets.is_array()) throw MalformedError("assets must be an array");
+        std::set<std::string> asset_ids;
         for (const auto& a : assets) {
             if (!a.is_object()) throw MalformedError("asset placement must be an object");
-            get_layer(a);
+            page.assets.push_back(parse_asset(a));
+            if (!asset_ids.insert(page.assets.back().id).second)
+                throw MalformedError("duplicate asset id: " + page.assets.back().id);
         }
     } catch (const json::exception& e) {
         // Missing key or wrong type
@@ -616,9 +672,84 @@ bool has_entry(zip_t* archive, const std::string& path) {
     return zip_name_locate(archive, path.c_str(), 0) >= 0;
 }
 
+// True if any entry lies below the directory, whether or not the archive has an entry for the
+// directory itself (it need not have one).
+bool has_directory(zip_t* archive, const std::string& directory) {
+    zip_int64_t n = zip_get_num_entries(archive, 0);
+    for (zip_int64_t i = 0; i < n; i++) {
+        const char* name = zip_get_name(archive, static_cast<zip_uint64_t>(i), 0);
+        if (name && std::string(name).rfind(directory, 0) == 0) return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Asset files - Section 9.2
+// ---------------------------------------------------------------------------
+
+// Looks at the file behind every placement and records what it found in AssetRef::status.
+// A missing, unsupported or corrupt asset is not a malformed condition: the page stays
+// readable, and a host application would draw a placeholder and signal an event (Section 9.2.1,
+// 9.3.2). Each file that is fine is kept once in Document::asset_files.
+void load_assets(zip_t* archive, Document& doc) {
+    std::set<std::string> loaded;
+    for (Page& page : doc.pages) {
+        for (AssetRef& ref : page.assets) {
+            auto set = [&](AssetStatus status, const std::string& detail) {
+                ref.status = status;
+                ref.status_detail = detail;
+            };
+
+            // The extension is part of the path, so it is only used once it is known to be
+            // one of Section 9.2.2 (Section 4.6.1).
+            if (!is_supported_asset_extension(ref.extension)) {
+                set(AssetStatus::UnsupportedFormat, "extension " + ref.extension);
+                continue;
+            }
+            const std::string name = ref.hash + "." + ref.extension;
+            if (!has_entry(archive, "assets/" + name)) {
+                set(AssetStatus::Missing, "assets/" + name + " is not in the archive");
+                continue;
+            }
+
+            std::vector<uint8_t> bytes = read_zip_entry(archive, "assets/" + name);
+            if (sha256_hex(bytes) != ref.hash) {  // Section 9.2.1
+                set(AssetStatus::Corrupt, "the SHA-256 of the file does not match its name");
+                continue;
+            }
+            AssetInfo info = check_asset_content(ref.extension, bytes);  // Section 9.2.3
+            if (!info.ok) {
+                set(AssetStatus::Corrupt, info.problem);
+                continue;
+            }
+            // Section 9.4.5: the region has to lie completely inside the image.
+            if (ref.crop && (int64_t(ref.crop->x) + ref.crop->width > info.width ||
+                             int64_t(ref.crop->y) + ref.crop->height > info.height)) {
+                set(AssetStatus::Corrupt, "the crop region does not lie inside the image");
+                continue;
+            }
+            if (loaded.insert(name).second) doc.asset_files.push_back({ref.extension, std::move(bytes)});
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // manifest.json - Section 6.1
 // ---------------------------------------------------------------------------
+
+// The text matches the pattern of Section 6.1.2; this checks that it is also a real date
+// and time (no 30 February, no hour 24, no second 60).
+bool is_valid_utc_datetime(const std::string& text) {
+    int year, month, day, hour, minute, second, ms;
+    if (std::sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d.%3dZ", &year, &month, &day, &hour, &minute, &second, &ms) != 7)
+        return false;
+    static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12) return false;
+    bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    int max_day = days[month - 1] + (month == 2 && leap ? 1 : 0);
+    return day >= 1 && day <= max_day && hour < 24 && minute < 60 && second < 60;
+}
+
 struct PageEntry {
     std::string id;
     int         order;
@@ -639,6 +770,8 @@ std::vector<PageEntry> parse_manifest(const json& manifest, Document& doc) {
         doc.modified_at = get_string(manifest, "modified_at");
         if (!std::regex_match(doc.created_at, time_re) || !std::regex_match(doc.modified_at, time_re))
             throw MalformedError("created_at and modified_at must be ISO 8601 UTC with milliseconds");
+        if (!is_valid_utc_datetime(doc.created_at) || !is_valid_utc_datetime(doc.modified_at))
+            throw MalformedError("created_at and modified_at must be a valid date and time");
 
         // Section 10.3: a higher MAJOR version is not opened without
         // confirmation. This reference implementation has no user interface,
@@ -703,10 +836,11 @@ bool read_onf(const std::string& input_path, Document& doc) {
             throw ContainerError(e.what());
         }
 
-        // A manifest that points to a missing page directory is a file-level error.
+        // A manifest that points to a missing page directory is a file-level error
+        // (Section 6.1.2). A directory that exists but lacks meta.json or strokes.bin is
+        // only a page-level error and is found when the page is read (Section 12.3.1).
         for (const PageEntry& e : entries) {
-            if (!has_entry(archive, "pages/" + e.id + "/meta.json") ||
-                !has_entry(archive, "pages/" + e.id + "/strokes.bin"))
+            if (!has_directory(archive, "pages/" + e.id + "/"))
                 throw ContainerError("page " + e.id + " is missing from the archive");
         }
 
@@ -716,6 +850,8 @@ bool read_onf(const std::string& input_path, Document& doc) {
             page.id    = e.id;
             page.order = e.order;
             try {
+                if (!has_entry(archive, "pages/" + e.id + "/meta.json")) throw MalformedError("meta.json is missing");
+                if (!has_entry(archive, "pages/" + e.id + "/strokes.bin")) throw MalformedError("strokes.bin is missing");
                 json meta = parse_json(read_zip_entry(archive, "pages/" + e.id + "/meta.json"));
                 parse_page_meta(meta, page);
                 parse_strokes_bin(read_zip_entry(archive, "pages/" + e.id + "/strokes.bin"), page);
@@ -727,9 +863,13 @@ bool read_onf(const std::string& input_path, Document& doc) {
                 page.error    = err.what();
                 page.ink.clear();
                 page.text_objects.clear();
+                page.assets.clear();
             }
             doc.pages.push_back(std::move(page));
         }
+
+        // --- Asset files (not malformed when they are missing or damaged, Section 9.2) ---
+        load_assets(archive, doc);
     } catch (const ContainerError& e) {
         std::cerr << "Cannot read " << input_path << ": " << e.what() << std::endl;
         zip_close(archive);

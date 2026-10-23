@@ -39,10 +39,10 @@ The format is designed to be:
 The v1.0 specification will cover:
 
 - Pen stroke storage (position, pressure, tilt, optional timestamps)
-- Geometric shapes (ellipse, rectangle, line, triangle)
+- Geometric shapes (ellipse, rectangle, line, triangle, with rotation for ellipse and rectangle)
 - Layers
 - Typed text objects with character styles (`spans`)
-- Embedded image and PDF assets, including PDF annotations
+- Embedded image and PDF assets, including PDF annotations and cropping of images
 - Multi-page documents
 - A physical, DIN-standard-aligned coordinate system
 - A binary stroke encoding optimised for performance and file size
@@ -56,8 +56,8 @@ Out of scope for v1.0 (may be addressed in future versions):
 
 ## Status
 
-> **This project is in an experimental pre-release stage (specification version 0.3.0).**
-> The specification is incomplete and subject to breaking changes.
+> **This project is in an experimental pre-release stage (specification version 0.4.0).**
+> The specification is incomplete and subject to breaking changes. It stays below version 1.0 on purpose, so that far-reaching changes can be tested.
 > Do not build production software against any document in this repository yet.
 
 This repository is the **single source of truth** for the ONF specification. All normative decisions about the format are made here.

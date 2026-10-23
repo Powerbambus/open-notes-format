@@ -15,6 +15,22 @@ add_executable(cpp
         src/onf_writer.cpp
         src/onf_reader.cpp
         src/onf_reader.h
+        src/sha256.h
+        src/sha256.cpp
+        src/asset_check.h
+        src/asset_check.cpp
 )
 
 target_link_libraries(cpp PRIVATE ${LIBZIP_LIBRARY})
+
+# Tests: run `ctest` in the build directory.
+enable_testing()
+add_executable(onf_ref_tests
+        tests/test_reference.cpp
+        src/onf_reader.cpp
+        src/onf_writer.cpp
+        src/sha256.cpp
+        src/asset_check.cpp
+)
+target_link_libraries(onf_ref_tests PRIVATE ${LIBZIP_LIBRARY})
+add_test(NAME onf_ref_tests COMMAND onf_ref_tests)

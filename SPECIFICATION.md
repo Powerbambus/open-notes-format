@@ -1,5 +1,5 @@
 # OpenNotes Format 
-Version 0.3.0
+Version 0.4.0
 ## 1. Introduction
 The OpenNotes Format (ONF) is an open, vendor-neutral file format for handwritten digital notes. It is designed to store pen strokes, shapes, text, images, and PDF pages in a self-contained file that any conforming application can read and write, without dependency on proprietary software or services. ONF prioritises compact file size, efficient parsing, and long-term accessibility.
 ### 1.1 Purpose
@@ -88,8 +88,10 @@ Fixed-length sequences of bytes are written as `u8[N]`, where `N` is the number 
 #### 2.3.5 JSON Values
 Sections of the ONF format that use JSON follow the JSON data model as 
 defined in [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259). String 
-values MUST be encoded as UTF-8. Integer values in JSON MUST NOT use 
-floating-point notation.
+values MUST be encoded as UTF-8. A JSON file of an ONF archive MUST NOT 
+begin with a byte order mark. A writer MUST NOT write one. A reader MUST 
+treat a file that begins with one as malformed. Integer values in JSON 
+MUST NOT use floating-point notation.
 JSON integer values that correspond to typed fields defined in Section 5 
 MUST NOT exceed the range of their target type. A reader encountering a 
 JSON integer that exceeds the range of its target type MUST treat the 
@@ -290,7 +292,7 @@ precision.
 
 A `mstime` value records the point in time at which an object was created. It is informational. It MUST NOT influence rendering or the order of objects.
 
-The `created_at` field of an object (stroke, shape, text object, or asset reference) is OPTIONAL. A writer SHOULD record the creation time of the object when it is known and MUST omit the field when it is not known. A writer MUST NOT invent a creation time for an object. A reader MUST NOT require the field. This does not apply to the `created_at` field of the manifest, which is REQUIRED (Section 6.1.2).
+The `created_at` field of strokes, shapes, text objects, and asset references is OPTIONAL. The `created_at` field of `manifest.json` is a different field with a different type (Section 6.1.2) and is REQUIRED. A writer SHOULD record the creation time when it is known and MUST omit the field when it is not known. A writer MUST NOT invent a creation time. A reader MUST NOT require the field.
 ### 5.6 Layer: `layer`
 A `layer` value identifies the layer of an object on a page.
 | Property | Value |
@@ -308,7 +310,7 @@ The manifest is the entry point of every ONF file. It is located at `manifest.js
 #### 6.1.1 Manifest Structure
 ```json
 {
-    "onf_version": "0.3.0",
+    "onf_version": "0.4.0",
     "generator": "onf-tools 0.3.0",
     "title": "Lecture Notes",
     "created_at": "2026-06-14T10:32:00.000Z",
@@ -325,8 +327,8 @@ The manifest is the entry point of every ONF file. It is located at `manifest.js
 |---|---|---|---|
 | `onf_version` | string | REQUIRED | The version of this specification the file was written against. Format: `MAJOR.MINOR.PATCH`, matching `^[0-9]+\.[0-9]+\.[0-9]+$`. |
 | `title` | string | REQUIRED | The document title. MAY be an empty string. |
-| `created_at` | string | REQUIRED | The date and time the ONF document was created. If the document was created by converting another file, this is the creation time of the source file, or its modification time if the source file has no creation time; if neither is known, it is the time of the conversion. MUST be a valid ISO 8601 UTC datetime string with millisecond precision. Format: `2026-06-14T10:32:00.000Z`. |
-| `modified_at` | string | REQUIRED | The date and time the document was last modified. MUST be a valid ISO 8601 UTC datetime string with millisecond precision. Format: `2026-06-14T10:32:00.000Z`. |
+| `created_at` | string | REQUIRED | The date and time the document was created as an ONF document. An application that converts a document from another format SHOULD use the creation time of the source file if it is known and the time of the conversion otherwise. MUST be a valid ISO 8601 UTC datetime string with millisecond precision. Format: `2026-06-14T10:32:00.000Z`. |
+| `modified_at` | string | REQUIRED | The date and time the document was last modified. An application that converts a document from another format SHOULD use the modification time of the source file if it is known and the time of the conversion otherwise. MUST be a valid ISO 8601 UTC datetime string with millisecond precision. Format: `2026-06-14T10:32:00.000Z`. |
 | `generator` | string | OPTIONAL | The name and version of the application that wrote the file, for example `"onf-tools 0.3.0"`. MUST NOT be longer than 65535 Unicode code points. Informational only: a reader MUST NOT change its behaviour based on this field. It SHOULD NOT contain personal data such as user names or file paths (Section 12.5). An application that modifies a file SHOULD replace the value with its own. |
 | `pages` | array | REQUIRED | List of page descriptors. MUST contain at least one and at most 99999 entries. |
 | `pages[].id` | string | REQUIRED | The directory name of the page under `pages/`. MUST match `^p[0-9]{5}$` and MUST match an existing page directory in the archive. |
@@ -375,6 +377,7 @@ The page background is rendered beneath all layers (Section 3.4). It does not be
 | `color` | string | REQUIRED | The page surface color in the format `#RRGGBBAA`. The alpha channel defines the opacity of the background surface. For a fully opaque background use `FF` as the alpha value. Hexadecimal digits are case-insensitive. |
 | `foreground_color` | string | REQUIRED for `ruled`, `grid`, `dotted` | The color of lines or dots in the format `#RRGGBBAA`. |
 | `spacing` | integer | REQUIRED for `ruled`, `grid`, `dotted` | The distance between lines or dots in `coord` units. MUST be a positive integer. |
+| `top_margin` | integer | OPTIONAL | Only for `ruled`, `grid`, and `dotted`; for other types a reader ignores it. The height in `coord` units of the area at the top of the page that is free of pattern elements (Section 6.3.2). MUST be at least `0` and MUST NOT exceed `2147483647`. Default: `0`. |
 
 Writers MUST explicitly state all required fields for the chosen background type. Readers MUST NOT apply default values for missing required fields. A reader encountering a missing required background field MUST treat the file as malformed.
 #### 6.3.2 Background Rendering Rules
@@ -393,6 +396,7 @@ The page surface is filled with `color`. Horizontal lines are drawn across the f
 - The first line is drawn at Y coordinate equal to the `spacing` value.
 - Subsequent lines are drawn at intervals of `spacing` in `coord` units.
 - No line is drawn at Y coordinate `0`.
+- No line is drawn at a Y coordinate less than `top_margin`.
 
 Line appearance:
 - Width: 1 physical display pixel, not scaled with document zoom.
@@ -404,6 +408,7 @@ The page surface is filled with `color`. Vertical and horizontal lines are drawn
 - The first horizontal line is drawn at Y coordinate equal to the `spacing` value.
 - Subsequent lines are drawn at intervals of `spacing` in `coord` units in both directions.
 - No line is drawn at X coordinate `0` or Y coordinate `0`.
+- No horizontal line is drawn at a Y coordinate less than `top_margin`. The vertical lines begin at the Y coordinate `top_margin` instead of at the top edge of the page.
 
 Line appearance:
 - Width: 1 physical display pixel, not scaled with document zoom.
@@ -414,6 +419,7 @@ The page surface is filled with `color`. Filled circles are drawn at the interse
 - The first dot centre is at coordinate `(spacing, spacing)`.
 - Subsequent dot centres are placed at intervals of `spacing` in both directions.
 - No dot is drawn at X coordinate `0` or Y coordinate `0`.
+- No dot is drawn whose centre has a Y coordinate less than `top_margin`.
 
 Dot appearance:
 - Diameter: 20% of the `spacing` value in `coord` units, converted to physical display pixels.
@@ -447,7 +453,7 @@ magic bytes MUST treat the file as invalid and MUST NOT attempt to parse
 further.
 The `version` field is an independent binary format revision counter. It
 is not related to the `onf_version` string in `manifest.json`. In ONF
-version 0.3.0 this field MUST be `2`. Releases of MAJOR version `0` are
+versions 0.3.0, 0.3.1, and 0.4.0 this field MUST be `2`. Releases of MAJOR version `0` are
 experimental and may change the binary layout incompatibly (Section 10.1);
 the field is incremented in that case so that a reader recognises files of
 a different layout. See Section 10.7.
@@ -501,7 +507,7 @@ A reader MUST parse the chunks of a `strokes.bin` file according to the followin
 | A `SHAPE` chunk has a `shape_type` that the reader does not know | The reader skips the chunk. |
 | A `SHAPE` chunk body is shorter than the parameters of its `shape_type` | Malformed. |
 | Bytes remain in a `SHAPE` chunk body after the parameters | The remaining bytes are ignored. They are reserved for future extensions. |
-| A `SHAPE` chunk has `tool_type` `4` | Malformed. |
+| A `STROKE` or `SHAPE` chunk has `tool_type` `4` | The reader skips the stroke or shape (Section 7.4.2). The chunk is parsed and checked like every other chunk. |
 | A `SHAPE` chunk violates a parameter rule of Section 7.9.4 or Section 7.9.6 | Malformed. |
 
 Every sample occupies at least 3 bytes if `NO_TIMESTAMP` is set (the fields `x`, `y`, and `pressure` each take at least one byte) and at least 4 bytes otherwise (the field `timestamp` is added). A reader SHOULD reject a `sample_count` that is larger than the remaining body length divided by this minimum before allocating memory for the samples.
@@ -533,10 +539,10 @@ The sample block follows the fixed header or, if present, the `created_at` field
 | `1` | Fountain pen | Strong pressure response, variable width. |
 | `2` | Pencil | Pressure affects opacity. Any texture is implementation-defined. |
 | `3` | Highlighter | Rendered with multiply blend mode. The opacity is the alpha value of `color`. |
-| `4` | Line eraser | Masks underlying content. See Section 7.4.4. |
+| `4` | Removed | Used for a line eraser mask in ONF 0.3.0 and 0.3.1. Writers MUST NOT use this value. Erasing is described in Section 7.6.1. |
 | `5`–`0xFFFF` | Reserved | Reserved for future versions of this specification. Writers MUST NOT use these values. |
 
-A reader encountering an unrecognised tool type MUST render the stroke as a ballpoint pen using the stored color and base width. A reader MUST NOT treat an unrecognised tool type as an error.
+A reader encountering tool type `4` MUST skip the stroke or shape: it MUST NOT render it and it is not part of the ink. A reader encountering another unrecognised tool type MUST render the stroke as a ballpoint pen using the stored color and base width. A reader MUST NOT treat an unrecognised tool type as an error.
 #### 7.4.3 Stroke Flags
 | Bit | Name | Meaning when set |
 |---|---|---|
@@ -545,16 +551,9 @@ A reader encountering an unrecognised tool type MUST render the stroke as a ball
 | 2 | `NO_PRESSURE` | Device reported no pressure. All pressure values are 255. |
 | 3 | `NO_TIMESTAMP` | Sample block includes no timestamp field. The elapsed time of the samples is unknown. |
 | 4 | `HAS_CREATED_AT` | The 8-byte `created_at` field follows the fixed stroke header. |
-| 5–15 | Reserved | MUST be 0. Readers MUST ignore. |
-#### 7.4.4 Line Eraser Rendering
-A stroke with tool type `4` MUST be rendered as a mask over ink (strokes and shapes) that is located in the same layer and that precedes the eraser stroke in the chunk order of `strokes.bin`. The eraser removes ink along its path. The eraser stroke itself MUST NOT be visible as ink.
-The line eraser affects only ink. It MUST NOT mask ink on other layers. It MUST NOT mask text objects or embedded assets, regardless of their layer. Text objects and assets can only be removed by deleting them from the file entirely. There is no non-destructive erase for these content types.
-The masked area is determined by the eraser stroke path and its
-`base_width`. Pressure data in the sample block MAY be used to vary the
-eraser width along the path as defined in Section 7.7.6. A reader that
-does not use pressure masks with the width `base_width`.
-A reader that does not support line eraser rendering MUST skip eraser
-strokes entirely. It MUST NOT render them as ink strokes.
+| 5 | `NO_TAPER_START` | The taper at the start of a fountain pen stroke is not applied (Section 7.7.3.1). A writer sets it at an end that was created by cutting a stroke (Section 7.6.1). Has no effect for other tools. |
+| 6 | `NO_TAPER_END` | The taper at the end of a fountain pen stroke is not applied. Otherwise as `NO_TAPER_START`. |
+| 7–15 | Reserved | MUST be 0. Readers MUST ignore. |
 ### 7.5 Sample Block
 The sample block immediately follows the fixed stroke header or, if present, the `created_at` field. It contains exactly `sample_count` samples encoded sequentially using delta encoding and varint compression.
 #### 7.5.1 Sample Fields
@@ -618,10 +617,18 @@ A reader encountering the `NO_PRESSURE` flag SHOULD render the stroke at a fixed
 ### 7.6 Ink Ordering
 Ink chunks (`STROKE` and `SHAPE`) in `strokes.bin` MUST be written in painter's order within each layer, from bottom to top: of two chunks of the same layer, the chunk that is drawn lower comes first. The chunk order of different layers has no meaning (Section 3.4). A reader MUST determine the rendering order as defined in Section 3.4.
 A writer that adds ink on top of a layer appends the chunk. A writer that adds ink below existing ink of a layer inserts the chunk before that ink.
-When a writer deletes a stroke or shape as a whole, for example when the user deletes a selected object, it MUST remove the corresponding chunk from the file entirely. Deleted objects MUST NOT be retained in the file in any form. This does not apply to ink that is only masked by a line eraser stroke (Section 7.4.4): the masked stroke remains in the file (see Section 12.5).
+When a writer deletes a stroke or shape as a whole, for example when the user deletes a selected object, it MUST remove the corresponding chunk from the file entirely. Deleted objects MUST NOT be retained in the file in any form.
+#### 7.6.1 Erasing
+Erasing part of the ink is an operation of the writer. The file stores no erase information and no mask: the erased data is removed.
+- **Strokes.** A writer that erases part of a stroke MUST remove the samples that lie in the erased area from the file. The remaining samples form one or more new strokes at the position of the original stroke in the ink order. Each new stroke has its own `stroke_id` (one of them MAY keep the original) and keeps color, tool type, `base_width`, flags, and layer. A stroke without remaining samples is deleted (Section 7.6). Erased samples MUST NOT be retained in the file in any form.
+- **Cut ends.** A writer SHOULD insert a sample at each point where the path of a stroke enters or leaves the erased area, with position, pressure, and elapsed time interpolated linearly between the neighbouring samples, so that the remaining parts end at the border of the erased area. A writer SHOULD set `NO_TAPER_START` or `NO_TAPER_END` on a cut end of a fountain pen stroke.
+- **Shapes.** A shape cannot keep a partly erased outline. A writer that erases part of a shape MUST either delete the whole shape (Section 7.6) or replace it with strokes that approximate the remaining outline.
+- **Scope.** What an erase operation affects, for example only the layer that the user works on, is up to the application.
 ### 7.7 Tool Rendering
 This section defines the rendering behaviour for each tool type. These rules are normative. A Full Reader (Section 11.4) MUST follow them when rendering strokes and shapes (shapes with the differences stated in Section 7.9.5). A Minimal Reader (Section 11.3) is only required to meet the stroke requirements listed there.
 Exact pixel-perfect rendering consistency across all implementations is a goal for future versions of this specification. In this version, conforming readers that follow these rules will produce visually similar results.
+This specification does not define how the path between two samples is drawn. A reader MAY draw straight segments or MAY smooth the path. Width and opacity follow the rules of this section either way.
+A stroke of a tool with a fixed opacity (ballpoint pen, fountain pen, highlighter) MUST be rendered as a single object: parts of the same stroke that overlap, for example where its path crosses itself, MUST NOT be composited more than once. Overlapping parts of different strokes are composited one after the other, so overlapping highlighter strokes become darker.
 All width values in this section are derived from the stroke `base_width` field. All opacity values are derived from the alpha channel of the stroke `color` field unless stated otherwise.
 #### 7.7.1 Pressure to Width Mapping
 A reader MAY ignore the pressure values of a stroke and render it with the maximum width and the maximum opacity defined for its tool type in the sections below. This is the behaviour for strokes with the `NO_PRESSURE` flag (Section 7.5.4), and it is also permitted for input that cannot supply pressure, such as finger input, or for readers that do not evaluate pressure.
@@ -654,6 +661,7 @@ f(i) = (N - 1 - i) / K         for i > N - 1 - K
 f(i) = 1                       otherwise
 ```
 The width at sample `i` is the pressure-dependent width multiplied by `f(i)`. The width at the first and last sample is therefore `0`.
+If `NO_TAPER_START` is set, `f(i)` is `1` for `i < K`. If `NO_TAPER_END` is set, `f(i)` is `1` for `i > N - 1 - K`. The width at that end is then the pressure-dependent width.
 #### 7.7.4 Pencil: tool type `2`
 | Property | Rule |
 |---|---|
@@ -665,33 +673,25 @@ The width at sample `i` is the pressure-dependent width multiplied by `f(i)`. Th
 | Property | Rule |
 |---|---|
 | Width | Fixed at `base_width`. Does not vary with pressure. |
-| Opacity | Fixed at the alpha value of `color`. |
+| Opacity | Fixed at the alpha value of `color`. A writer without a preference SHOULD use the alpha value `0x66` (40%). |
 | Taper | None. |
 | Blend mode | Multiply, as defined in the W3C Compositing and Blending specification Level 1, Section 8.1. |
 
 The multiply blend mode is applied to everything that is drawn beneath the highlighter in the rendering order of Section 3.4: the page background, all objects on lower layers, and the assets, text objects, and earlier ink of the same layer.
-#### 7.7.6 Line Eraser: tool type `4`
-| Property | Rule |
-|---|---|
-| Width | Varies linearly with pressure. Minimum 60% of `base_width` at pressure 0. Maximum 100% of `base_width` at pressure 255. |
-| Opacity | Not applicable. The eraser masks content rather than drawing ink. |
-| Taper | None. |
-| Blend mode | Not applicable. |
-#### 7.7.7 Unsupported Tool Types
-An unrecognised tool type is handled as defined in Section 7.4.2: the stroke is rendered using the ballpoint pen rules of Section 7.7.2 with the stored `color` and `base_width`.
+#### 7.7.6 Unsupported Tool Types
+An unrecognised tool type other than `4` is handled as defined in Section 7.4.2: the stroke is rendered using the ballpoint pen rules of Section 7.7.2 with the stored `color` and `base_width`.
 ### 7.8 Degenerate Strokes
 A stroke with a `sample_count` of `1` is valid. A single-sample stroke 
 MUST be rendered as a filled circle at the sample position. The diameter 
 of the circle MUST equal the `base_width` of the stroke, regardless of 
 the tool type and of the pressure value. The color and opacity are 
-determined by the tool type rendering rules in Section 7.7. For a line 
-eraser stroke (tool type `4`) the circle is the masked area.
+determined by the tool type rendering rules in Section 7.7.
 For fountain pen strokes (tool type `1`) with fewer than 20 samples no 
 taper is applied, as defined in Section 7.7.3.1. The stroke MUST be 
 rendered at full `base_width` for its entire length.
 ### 7.9 Shapes
 #### 7.9.1 Overview
-A shape is a geometric outline stored by its parameters. It is ink: it is stored in `strokes.bin`, it belongs to a layer, it is drawn in the order of the ink chunks (Section 3.4), and it is masked by a line eraser (Section 7.4.4).
+A shape is a geometric outline stored by its parameters. It is ink: it is stored in `strokes.bin`, it belongs to a layer, and it is drawn in the order of the ink chunks (Section 3.4).
 The parameters allow an application to edit a shape later, for example to change the radius of an ellipse. A reader renders the outline from the parameters as defined in Section 7.9.5. Shapes have no samples and no pressure.
 #### 7.9.2 Shape Chunk
 A `SHAPE` chunk body consists of a fixed shape header, an optional `created_at` field, the `shape_type`, and the parameters of that type.
@@ -699,7 +699,7 @@ A `SHAPE` chunk body consists of a fixed shape header, an optional `created_at` 
 |---|---|---|---|---|
 | 0 | 4 | `u32` | stroke_id | Unique identifier within the page, shared with `STROKE` chunks (Section 7.4.1). |
 | 4 | 4 | `color` | color | The outline color. See Section 5.2. |
-| 8 | 2 | `u16` | tool_type | The tool whose rendering rules apply. MUST be `0`, `1`, `2`, or `3`. A value of `4` is malformed. An unrecognised value is handled as in Section 7.4.2. |
+| 8 | 2 | `u16` | tool_type | The tool whose rendering rules apply. MUST be `0`, `1`, `2`, or `3`. Other values are handled as in Section 7.4.2 (a shape with tool type `4` is skipped). |
 | 10 | 2 | `u16` | base_width | The outline width in `coord` units. MUST be greater than 0. |
 | 12 | 2 | `flags` | flags | Only bit 4 (`HAS_CREATED_AT`) is defined for shapes. Writers MUST set all other bits to 0. Readers MUST ignore them. |
 | 14 | 2 | `layer` | layer | The layer of this shape. See Section 5.6. |
@@ -778,7 +778,7 @@ The outline of a shape is the following path:
 - Triangle: the closed path through the three vertices in the order given.
 
 The path is stroked, not filled. The stroke is centered on the path: half of the outline width lies on each side. The outline width is `base_width`. The ends of an open path (line) are round. The corners of a rectangle and a triangle are round joins.
-The tool rules of Section 7.7 apply with the following differences: the pressure is treated as 255, so the width is the maximum width of the tool and the opacity is the maximum opacity of the tool. A fountain pen shape has no taper. A highlighter shape uses the alpha value of `color` as its opacity and the multiply blend mode, applied as described in Section 7.7.5.
+The tool rules of Section 7.7 apply with the following differences: the pressure is treated as 255, so the width is the maximum width of the tool and the opacity is the maximum opacity of the tool. A fountain pen shape has no taper. A highlighter shape uses the alpha value of `color` as opacity and the multiply blend mode, applied as described in Section 7.7.5.
 The outline MUST be rendered as a single object. Parts of the same outline that overlap, such as the closing point of a closed path or the two sides of a join, MUST NOT be composited twice. This matters for partially transparent colors and for the highlighter.
 A line whose two end points are identical MUST be rendered as a filled circle at that point with a diameter of `base_width`. Other degenerate shapes (a triangle with collinear vertices) are rendered according to the path rule without special handling.
 #### 7.9.6 Rotation
@@ -931,7 +931,7 @@ be deleted by a reader.
 Text objects are drawn in the order of the entries in the `text_objects` array, from first to last, within their layer (Section 3.4). Writers MUST list text objects from bottom to top. A reader MUST NOT reorder them.
 ## 9. Embedded Assets
 ### 9.1 Overview
-Assets are binary resources embedded directly within the ONF archive. In v0.3.0 of this specification, assets are limited to images and PDF documents. Assets are stored in the `assets/` directory at the archive root and referenced by pages via the `assets` array in `meta.json`.
+Assets are binary resources embedded directly within the ONF archive. In v0.4.0 of this specification, assets are limited to images and PDF documents. Assets are stored in the `assets/` directory at the archive root and referenced by pages via the `assets` array in `meta.json`.
 An asset is stored once in the archive regardless of how many pages reference it. If the same image or PDF document appears on three pages, it is stored as a single file in `assets/` and referenced three times.
 ### 9.2 Asset Storage
 #### 9.2.1 File Naming
@@ -992,9 +992,18 @@ Each page references its assets through the `assets` array in `meta.json`. An as
 | `width` | integer | REQUIRED | Rendered width of the asset in `coord` units. MUST be greater than 0. |
 | `height` | integer | REQUIRED | Rendered height of the asset in `coord` units. MUST be greater than 0. |
 | `layer` | integer | REQUIRED | The layer of this asset. See Section 5.6. |
+| `crop` | object | OPTIONAL | The region of the image that is shown. Only for image assets (`webp`, `png`, `jpg`). See Section 9.4.5. For `pdf` the field MUST NOT be written, and a reader MUST ignore it. |
 | `pdf_page` | integer | REQUIRED if `extension` is `pdf` | The page of the PDF document that this placement shows. The first page is `1`. MUST be at least `1` and MUST NOT exceed `2147483647`. For other extensions the field MUST NOT be written, and a reader MUST ignore it. |
 
 If `pdf_page` is greater than the number of pages of the PDF document, a reader MUST render a placeholder and signal a corrupt asset event. This is not a malformed condition.
+
+The `crop` object has the members `x`, `y`, `width`, and `height`, all of them REQUIRED integers in pixels of the decoded image. `x` and `y` MUST be at least `0`. `width` and `height` MUST be at least `1`. No member MAY exceed `2147483647`. A reader MUST treat a `crop` that violates one of these rules, or that is not an object, as a malformed page (page-level error, Section 12.3.1). Unknown members MUST be ignored (Section 10.5.1).
+
+```json
+{
+    "crop": { "x": 120, "y": 80, "width": 1600, "height": 900 }
+}
+```
 
 A reader encountering a reference whose asset file is missing from the archive MUST render a placeholder in its place and MUST signal a missing asset event to the host application, identifying the asset by its hash. The placeholder MUST show an error indication, for example an error message or symbol, so that users can distinguish it from regular content. The host application MUST present the event to the user. In contexts where no user interface is available the host application MUST log the missing asset. A missing asset file is not a malformed condition; the page remains readable.
 ### 9.4 Rendering
@@ -1003,7 +1012,7 @@ Assets are rendered according to their `layer` value and the rules of Section 3.
 #### 9.4.2 Order Within a Layer
 Assets in the same layer are drawn in the order of the `assets` array, from first to last. Writers MUST list assets from bottom to top. A reader MUST NOT reorder them.
 #### 9.4.3 Scaling
-A reader MUST scale the asset to fill the `width` and `height` defined in the asset reference. The aspect ratio of the original asset content is not preserved unless `width` and `height` are set by the writer to match the original proportions. Writers SHOULD set `width` and `height` to preserve the original aspect ratio unless the user has explicitly requested distortion.
+A reader MUST scale the visible area of the asset to fill the `width` and `height` defined in the asset reference. The visible area is the whole image or, if `crop` is present, the region defined in Section 9.4.5. The aspect ratio of the original asset content is not preserved unless `width` and `height` are set by the writer to match the original proportions. Writers SHOULD set `width` and `height` to preserve the original aspect ratio unless the user has explicitly requested distortion.
 #### 9.4.4 PDF Rendering
 A placement with `extension` `pdf` shows one page of the PDF document, rendered as follows:
 
@@ -1011,14 +1020,17 @@ A placement with `extension` `pdf` shows one page of the PDF document, rendered 
 - **Page box.** The visible area is the CropBox of the page. If the page has no CropBox, the MediaBox is used. The CropBox is intersected with the MediaBox. The rotation of the page (`/Rotate`, including inherited values) is applied.
 - **Scaling.** The page is scaled to fill the `width` and `height` of the placement, as defined in Section 9.4.3.
 - **Paper.** The page is rendered on an opaque white background.
-- **Annotations.** A Full Reader renders the annotations of the page after the page content, in the order of the `/Annots` array. An annotation is rendered from its normal appearance stream (`/AP`, `/N`; for an annotation with several appearance states, the state named by `/AS`). Form fields (widgets) are annotations in this sense: a widget with an appearance stream is rendered as a static image, without interaction. A reader MUST NOT render an annotation in the following cases:
-  - The flag Hidden or NoView is set.
-  - It is a Popup or Link annotation.
-  - It has no appearance stream. A reader MUST NOT generate an appearance for it.
-- **No active content.** Readers MUST NOT execute JavaScript, actions, or launch operations, MUST NOT open links, MUST NOT extract or open embedded files, and MUST NOT load external resources of any kind, also not for annotations (see Section 12.4). A PDF that requires a password is handled as corrupt.
+- **Annotations.** After the content of the page, the annotations of the page are rendered in the order of its `/Annots` array. An annotation is rendered if and only if it has a normal appearance stream (`/AP` with `/N`; if `/N` is a dictionary of states, the stream selected by `/AS`) and neither the Hidden flag nor the NoView flag is set. Annotations of the subtypes Link and Popup are never rendered. The appearance stream is placed as defined in ISO 32000-1, Section 12.5.5. A reader MUST NOT generate an appearance for an annotation that has none. Form fields (subtype Widget) are annotations: they are rendered with their appearance stream like all other annotations, as static content without interaction.
+- **No active content.** Appearance streams are content, not actions. Readers MUST NOT execute JavaScript, actions, or launch operations, MUST NOT open links, MUST NOT extract or open embedded files, and MUST NOT load external resources of any kind (see Section 12.4). A PDF that requires a password is handled as corrupt.
 - **Fonts.** Writers SHOULD embed PDFs with all fonts embedded. How a reader substitutes missing fonts in a PDF is implementation-defined.
 
 A reader that cannot render PDF MUST render a placeholder and signal an unsupported asset format event (Section 9.2.2).
+#### 9.4.5 Cropping
+If an asset reference of an image has the member `crop`, only the region of the decoded image defined by `crop` is shown. The coordinates are pixels of the image as stored: the origin is the top left corner, X increases to the right and Y increases downward. EXIF orientation is not applied (Section 9.2.3). For an animated image the region applies to the first frame. The region is scaled to fill the `width` and `height` of the placement as defined in Section 9.4.3.
+
+The region MUST lie completely inside the image: `x + width` MUST NOT exceed the width of the image and `y + height` MUST NOT exceed the height of the image. A reader can check this only when it knows the dimensions of the image. If the region does not lie inside the image, the reader MUST treat the asset as corrupt, render a placeholder, and signal a corrupt asset event. This is not a malformed condition and the page remains readable.
+
+The decoded size limit of Section 9.2.3 applies to the whole image, not to the region.
 ### 9.5 Self-Containment
 All assets MUST be embedded in the archive. A writer MUST NOT store external URI references as a substitute for embedding. An ONF file MUST render its complete intended content without network access. This is a requirement of the data sovereignty principle defined in Section 1.5.
 ## 10. Versioning and Compatibility
@@ -1027,7 +1039,7 @@ ONF uses semantic versioning in the format `MAJOR.MINOR.PATCH`. The version is s
 Examples of valid version strings:
 | String | Meaning |
 |---|---|
-| `0.3.0` | Pre-release version (MAJOR version `0`), no stability guarantees |
+| `0.4.0` | Pre-release version (MAJOR version `0`), no stability guarantees |
 | `1.0.0` | First stable release |
 | `1.1.0` | Stable release with additive changes |
 | `2.0.0` | Second stable release with breaking changes |
@@ -1068,8 +1080,7 @@ Deprecated fields will be marked as deprecated in the specification for at least
 Within a MAJOR version of `1` or higher, the layout of the body of a chunk type that is already defined MUST NOT change. New functionality is added through new chunk types, new JSON keys, or additional data after the defined fields of a chunk body (Section 7.3.2). This is what allows readers to skip unknown chunks safely.
 ### 10.7 Version Identification in strokes.bin
 The `version` field in the `strokes.bin` file header defined in Section 7.2 is an independent binary format revision counter, stored as a `u16`. It is not related to the semantic version string in `manifest.json`.
-In ONF version 0.3.0 this field MUST be `2`. The value `1` was used by earlier drafts of this specification, whose chunk layouts differ from the layout of value `2` (in particular the `STROKE` header and the `SHAPE` chunk). Because MAJOR version `0` is experimental, later releases may change the layout again and increment the field.
-The semantics of tool type `3` (highlighter) also differ from ONF 0.2.0: the opacity was fixed at 40% there and is the alpha value of `color` since 0.3.0. This does not affect the binary layout. It is permitted for MAJOR version `0` (Section 10.1).
+In ONF versions 0.3.0, 0.3.1, and 0.4.0 this field MUST be `2`. Version 0.4.0 removed the line eraser (tool type `4`) and defined the bits 5 and 6 of the stroke flags, which were reserved, without changing the layout of any chunk. The opacity of the highlighter tool is the alpha value of `color` (Section 7.7.5), whereas ONF 0.2.0 fixed it at 40%. This changes no part of the binary layout, so the value stays `2`. The value `1` was used by earlier drafts of this specification, whose chunk layouts differ from the layout of value `2` (in particular the `STROKE` header and the `SHAPE` chunk). Because MAJOR version `0` is experimental, later releases may change the layout again and increment the field.
 The handling of a `version` field that differs from the value a reader implements is defined in Section 7.2. The forward compatibility rules of Section 10.5 do not apply to such a `version` value.
 ## 11. Conformance
 ### 11.1 Overview
@@ -1118,8 +1129,7 @@ A Minimal Reader MUST satisfy all of the following requirements. As stated in Se
   unknown chunk types as errors.
 - MUST fall back to ballpoint pen rendering for unknown tool types as 
   defined in Section 7.4.2.
-- MUST either render line eraser strokes as masks in the manner of Section 7.4.4 or skip them entirely.
-  MUST NOT render line eraser strokes as ink.
+- MUST skip strokes and shapes with tool type `4` and MUST NOT render them as ink (Section 7.4.2).
 #### Error Handling
 - MUST handle malformed input without crashing, looping endlessly, or allocating unbounded memory, and MUST apply the error scopes defined in Section 12.3.
 - MUST NOT render a page with a page-level error partially.
@@ -1137,10 +1147,9 @@ A Full Reader MUST satisfy all Minimal Reader requirements and additionally:
 #### Backgrounds
 - MUST correctly render all four background types (`blank`, `ruled`, `grid`, and `dotted`) as defined in Section 6.3.2.
 #### Strokes
-- MUST render all five tool types according to the rules defined in Section 7.7, including the taper calculation of Section 7.7.3.1 and the single-sample rule of Section 7.8.
+- MUST render all four tool types according to the rules defined in Section 7.7, including the taper calculation with the flags `NO_TAPER_START` and `NO_TAPER_END` (Section 7.7.3.1), the single-object rule of Section 7.7, and the single-sample rule of Section 7.8.
 - MUST decode tilt and azimuth sample fields when the `HAS_TILT` and `HAS_AZIMUTH` flags are set and MUST make the values available to the host application. This specification does not define a rendering effect for these values.
 - MUST apply the multiply blend mode for the highlighter tool as defined in Section 7.7.5.
-- MUST correctly mask underlying ink of the same layer for line eraser strokes as defined in Section 7.4.4.
 #### Shapes
 - MUST render all four shape types as defined in Sections 7.9.4 to 7.9.6, including rotation, round joins, and the single-object rule.
 #### Text Objects
@@ -1160,8 +1169,8 @@ A Full Reader MUST satisfy all Minimal Reader requirements and additionally:
 - MUST resolve asset files by SHA-256 hash from the `assets/` directory as defined in Section 9.2.1.
 - MUST scale assets to the rendered `width` and `height` defined in the asset reference.
 - MUST apply the asset content rules of Section 9.2.3 (extension matches content, EXIF orientation ignored, first frame only, decoded size limit).
-- MUST render PDF assets as defined in Section 9.4.4 and apply the PDF rules of Section 9.2.3.
-- MUST render the annotations and form fields of a PDF page that have an appearance stream as defined in Section 9.4.4.
+- MUST render PDF assets as defined in Section 9.4.4, including the annotations, and apply the PDF rules of Section 9.2.3.
+- MUST apply `crop` of image assets as defined in Section 9.4.5.
 - MUST render a placeholder with an error indication and signal a missing asset event to the host application when a referenced asset file is missing from the archive.
 - MUST render a placeholder and signal an unsupported asset format event for assets with an extension that is not supported.
 #### Layers
@@ -1204,7 +1213,7 @@ A Conforming Writer MUST satisfy all of the following requirements. As stated in
 - MUST keep the accumulated value of each sample field within its range (Section 7.5.1).
 - MUST set the `NO_PRESSURE` flag and store `255` for all pressure 
   values on devices without pressure support.
-- MUST remove deleted strokes and shapes completely from the file. MUST NOT retain 
+- MUST remove erased samples as defined in Section 7.6.1. MUST remove deleted strokes and shapes completely from the file. MUST NOT retain 
   deleted strokes or shapes in any form.
 #### Shapes
 - MUST write only the shape types of Section 7.9.3 with valid parameters (Sections 7.9.4 and 7.9.6) and a `tool_type` between 0 and 3.
@@ -1218,10 +1227,11 @@ A Conforming Writer MUST satisfy all of the following requirements. As stated in
 - MUST embed all assets within the archive in a format listed in Section 9.2.2, and MUST NOT write external URI references.
 - MAY write `created_at` on text objects and asset references. If it does, the value MUST be an integer not greater than 9007199254740991. MUST NOT invent creation times for objects (strokes, shapes, text objects, and assets).
 - MUST write `pdf_page` for assets with the extension `pdf`, MUST NOT embed encrypted PDFs, and MUST NOT knowingly embed PDFs with external references.
+- MAY write `crop` for image assets. If it does, the values MUST satisfy Sections 9.3.2 and 9.4.5. MUST NOT write `crop` for assets with the extension `pdf`.
 - MUST NOT write unpaired surrogates in JSON strings and MUST respect the string length limits of Section 12.6.
 #### Compatibility
 - MUST set all undefined flag bits to `0`.
-- MUST NOT use chunk type values, tool type values, or shape type values that are reserved in Sections 7.3.1, 7.4.2, and 7.9.3, meaning chunk types `0x0004`–`0xFFFF`, tool types `5`–`0xFFFF`, and shape types `0` and `5`–`0xFFFF`. These values are reserved for future versions of this specification.
+- MUST NOT use chunk type values, tool type values, or shape type values that are reserved in Sections 7.3.1, 7.4.2, and 7.9.3, meaning chunk types `0x0004`–`0xFFFF`, tool types `4`–`0xFFFF`, and shape types `0` and `5`–`0xFFFF`. These values are reserved for future versions of this specification.
 ### 11.6 Conforming Application
 A Conforming Application MUST satisfy all Full Reader requirements defined in Section 11.4 and all Conforming Writer requirements defined in Section 11.5.
 ### 11.7 Conformance and Future Versions
@@ -1245,8 +1255,8 @@ A reader MUST handle malformed input gracefully at all times. A malformed ONF fi
 A malformed condition has one of two scopes. The scope depends on the part of the archive in which the condition is found.
 | Scope | Conditions | Reader behaviour |
 |---|---|---|
-| File-level error | Malformed conditions in the ZIP container (Sections 4.1, 4.6, 4.6.1, 4.7), in `manifest.json` (invalid JSON, missing or invalid fields, violated `id` or `order` rules of Section 6.1.2, a missing page directory), and JSON structural limit violations in `manifest.json` (Section 12.6). | The reader MUST reject the whole file, MUST report an error to the application, and MUST NOT render any page. |
-| Page-level error | Malformed conditions in the `meta.json` or `strokes.bin` of one page, including invalid JSON, missing or invalid fields, an incorrect magic number, a `version` of `0`, a `version` other than the reader implements, and violations of Sections 2.3.2, 5.6, 7.3.2, 7.5.2, 7.9.4, 7.9.6, and 8.3.1. | The reader MUST report a page error to the application, identifying the page. The reader MUST show a placeholder with an error indication in place of the page and MUST NOT render any part of the affected page. All other pages remain readable. |
+| File-level error | Malformed conditions in the ZIP container (Sections 4.1, 4.6, 4.6.1, 4.7), in `manifest.json` (invalid JSON, a byte order mark, missing or invalid fields, violated `id` or `order` rules of Section 6.1.2, a missing page directory), and JSON structural limit violations in `manifest.json` (Section 12.6). | The reader MUST reject the whole file, MUST report an error to the application, and MUST NOT render any page. |
+| Page-level error | Malformed conditions in the `meta.json` or `strokes.bin` of one page, including a `meta.json` or `strokes.bin` that is missing from a page directory that exists, invalid JSON, a byte order mark, missing or invalid fields, an incorrect magic number, a `version` of `0`, a `version` other than the reader implements, violations of Sections 2.3.2, 5.6, 7.3.2, 7.5.2, 7.9.4, 7.9.6, 8.3.1, and 9.3.2, and JSON structural limit violations in `meta.json` (Section 12.6). | The reader MUST report a page error to the application, identifying the page. The reader MUST show a placeholder with an error indication in place of the page and MUST NOT render any part of the affected page. All other pages remain readable. |
 
 In all cases the reader MUST NOT attempt to recover or guess the intended content.
 #### 12.3.2 Malformed Conditions
@@ -1264,12 +1274,15 @@ The following conditions are malformed and MUST be handled safely and according 
 - A `layer` value of `0` or outside the range 1 to 65535
 - A `SHAPE` chunk that violates a rule of Section 7.3.2, Section 7.9.4, or Section 7.9.6
 - A `spans` array that violates a rule of Section 8.3.1
+- A `crop` member of an asset reference that violates a rule of Section 9.3.2
+- A page directory listed in the manifest that has no `meta.json` or no `strokes.bin`
+- A JSON file that begins with a byte order mark (Section 2.3.5)
 
 The following conditions are explicitly not malformed. They are listed for clarity:
 - Non-zero reserved bytes in the `strokes.bin` header. Readers MUST ignore them.
 - A `pages/` directory that is not referenced by the manifest. Readers MUST silently ignore orphan page directories.
 - Files in `assets/` that are not referenced by any page (Section 9.2.3).
-- An asset reference whose asset file is missing, whose extension is not supported, whose content is corrupt, or whose `pdf_page` exceeds the number of pages of the PDF document. The reader renders a placeholder and signals the event defined in Section 9. The page remains readable.
+- An asset reference whose asset file is missing, whose extension is not supported, whose content is corrupt, whose `pdf_page` exceeds the number of pages of the PDF document, or whose `crop` region does not lie inside the image. The reader renders a placeholder and signals the event defined in Section 9. The page remains readable.
 - Unknown JSON keys, unknown chunk types, unknown flag bits, unknown tool types, unknown shape types, and unknown background types (Section 10.5).
 ### 12.4 Asset Safety
 #### 12.4.1 No Script Execution
@@ -1284,10 +1297,10 @@ Writers MUST NOT embed assets that contain external references. Writers MUST NOT
 #### 12.4.4 PDF Documents
 A PDF document is a container that can hold scripts, actions, links, embedded files, and references to external resources. A reader MUST render PDF assets only in a way that excludes all of these:
 
+- Annotations are rendered only through their appearance streams (Section 9.4.4). The actions, links, and scripts of an annotation MUST NOT be executed or followed.
 - JavaScript and any other script MUST NOT be executed.
 - Actions of any kind (launch, URI, GoTo of other documents, form submission) MUST NOT be executed or followed.
 - Embedded files MUST NOT be extracted or opened.
-- Annotations MUST be rendered only from their appearance stream. Actions, links, and scripts of an annotation or form field MUST NOT be executed or followed, and the content of form fields MUST NOT be edited or submitted.
 - No network access MUST happen while rendering. External fonts, images, and streams MUST be ignored.
 - The renderer MUST run with these features disabled. If the renderer cannot guarantee this, it MUST NOT render the PDF and MUST render a placeholder.
 
@@ -1295,7 +1308,7 @@ A PDF parser is a large attack surface. A reader MUST treat a PDF as untrusted i
 ### 12.5 Privacy
 An ONF file may contain sensitive personal data including handwritten notes, typed text, images, and PDF documents. Readers and writers MUST NOT transmit the contents of an ONF file to any external server or service without explicit informed consent from the user.
 This requirement is a direct consequence of the data sovereignty principle defined in Section 1.5. A user's notes belong to the user. No part of the ONF ecosystem (readers, writers, or libraries) may treat note content as data to be collected, analysed, or transmitted without the user's knowledge and consent.
-A line eraser stroke (Section 7.4.4) only masks ink; the masked stroke remains in the file with all its sample data. Applications that offer the user a way to remove content permanently, for example before sharing a file, SHOULD remove the affected `STROKE` and `SHAPE` chunks entirely as described in Section 7.6.
+Content that the user has deleted or erased is removed from the file (Sections 7.6 and 7.6.1). Applications MUST NOT keep it in any form, for example as an erase mask or a hidden chunk.
 ### 12.6 Malformed JSON
 Readers MUST NOT use an unsafe JSON parser that is vulnerable to denial of service through deeply nested structures or extremely long strings. A reader encountering a `manifest.json` or `meta.json` file that exceeds the structural limits below MUST treat it as malformed and report an error rather than attempting to parse it fully.
 The structural limits are:
@@ -1524,7 +1537,7 @@ All dimensions are given in `coord` units (1/100 mm). Portrait orientation is as
 Writers using custom dimensions MUST still define `width` and `height` explicitly in `meta.json`. The values in this table are provided for reference only and carry no special meaning within the format.
 
 ---
-### Appendix C: Test Vectors for Version 0.3.0
+### Appendix C: Test Vectors for Version 0.4.0
 All vectors are complete chunks including the 6-byte chunk frame. Colors are RGBA. `chunk_length` is the length of the body without the frame.
 #### C.1 Stroke vectors
 
@@ -1547,6 +1560,17 @@ Stroke: `stroke_id` 2, color `00 00 00 FF`, tool 1, `base_width` 100, flags `0x0
 ```
 01 00 28 00 00 00 02 00 00 00 00 00 00 FF 01 00 64 00 10 00 01 00 02 00 00 00 00 88 B7 C5 9E 01 00 00 A0 9C 01 90 4E 90 03 00 08 06 04 08
 ```
+
+**V7: STROKE, fountain pen with both cut ends, layer 1**
+
+Stroke: `stroke_id` 7, color `00 00 00 FF`, tool 1, `base_width` 100, flags `0x006C` (`NO_PRESSURE`, `NO_TIMESTAMP`, `NO_TAPER_START`, `NO_TAPER_END`), layer 1. Samples: (1000, 2000, pressure 255), (1010, 2005, pressure 255). The timestamp field is absent.
+`chunk_length` = 29 bytes, total 35 bytes.
+
+```
+01 00 1D 00 00 00 07 00 00 00 00 00 00 FF 01 00 64 00 6C 00 01 00 02 00 00 00 D0 0F A0 1F FE 03 14 0A 00
+```
+
+Sample bytes: `D0 0F` (dx 1000, zigzag 2000), `A0 1F` (dy 2000, zigzag 4000), `FE 03` (pressure 255, zigzag 510); second sample: `14` (dx 10), `0A` (dy 5), `00` (dp 0).
 
 #### C.2 Shape vectors
 
