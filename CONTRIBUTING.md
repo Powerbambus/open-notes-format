@@ -7,9 +7,10 @@ ONF is an open specification for a file format for handwritten digital notes. Th
 
 ---
 ## Current status
-The specification is at **v0.2.0**. This means:
+The specification is at **v0.3.0**. This means:
 - The core design is in place but not yet frozen
-- Breaking changes are still possible
+- Version 0.x is deliberately experimental: it exists so that far-reaching changes can be tested before 1.0.0
+- Any 0.x release may break the format, including the binary layout, and files of one 0.x version may not be readable by another
 - No stability guarantees apply to any part of the format
 - External feedback is the most valuable thing this project needs right now
 

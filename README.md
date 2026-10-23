@@ -13,7 +13,7 @@ ONF exists to fix that.
 
 ## What ONF Is
 
-ONF is an open specification for a file format that stores handwritten notes — including pen strokes, pressure and tilt data, typed text, and embedded images — in a way that any application can implement, read, and write.
+ONF is an open specification for a file format that stores handwritten notes — including pen strokes, pressure and tilt data, shapes, typed text, and embedded images and PDF pages — in a way that any application can implement, read, and write.
 
 The format is designed to be:
 
@@ -38,9 +38,11 @@ The format is designed to be:
 
 The v1.0 specification will cover:
 
-- Pen stroke storage (position, pressure, tilt, timestamps)
-- Typed text objects
-- Embedded image assets
+- Pen stroke storage (position, pressure, tilt, optional timestamps)
+- Geometric shapes (ellipse, rectangle, line, triangle)
+- Layers
+- Typed text objects with character styles (`spans`)
+- Embedded image and PDF assets, including PDF annotations
 - Multi-page documents
 - A physical, DIN-standard-aligned coordinate system
 - A binary stroke encoding optimised for performance and file size
@@ -54,7 +56,7 @@ Out of scope for v1.0 (may be addressed in future versions):
 
 ## Status
 
-> **This project is in early pre-draft stage.**
+> **This project is in an experimental pre-release stage (specification version 0.3.0).**
 > The specification is incomplete and subject to breaking changes.
 > Do not build production software against any document in this repository yet.
 

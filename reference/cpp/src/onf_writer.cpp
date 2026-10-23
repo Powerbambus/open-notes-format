@@ -10,6 +10,7 @@
 #include <regex>
 #include <iostream>
 #include <cstdint>
+#include <variant>
 
 using json = nlohmann::json;
 
@@ -19,6 +20,7 @@ constexpr int64_t  MAX_JSON_INT        = 9007199254740991;  // 2^53 - 1, Section
 constexpr size_t   MAX_PAGES           = 99999;             // Section 4.2
 constexpr size_t   MAX_CONTENT_CHARS   = 1048576;           // Section 12.6
 constexpr size_t   MAX_STRING_CHARS    = 65535;             // Section 12.6
+constexpr size_t   MAX_SPANS           = 65535;             // Section 8.3.1
 
 // Writes a little-endian value. Section 2.3.3
 template<typename T>
@@ -73,6 +75,8 @@ bool validate_document(const Document& doc) {
     static const std::regex version_re("^[0-9]+\\.[0-9]+\\.[0-9]+$");
     if (!std::regex_match(doc.onf_version, version_re))
         return fail("onf_version must have the format MAJOR.MINOR.PATCH");
+    if (doc.generator && utf8_length(*doc.generator) > MAX_STRING_CHARS)
+        return fail("generator too long");
 
     // Section 6.1.2: 1 to 99999 pages, ids p00001..pN, orders 1..N, each once
     const size_t n = doc.pages.size();
@@ -106,43 +110,73 @@ bool validate_document(const Document& doc) {
                 return fail(where + "background spacing must be positive");
         }
 
-        // Sections 7.4.1, 7.4.2, 7.4.3, 7.5.1, 7.6
+        // Sections 5.6, 7.4.1, 7.4.2, 7.4.3, 7.5.1, 7.9
+        // stroke_id is unique across strokes and shapes (Section 7.4.1).
         std::set<uint32_t> stroke_ids;
-        uint64_t last_created = 0;
-        for (const Stroke& st : page.strokes) {
-            const std::string sw = where + "stroke " + std::to_string(st.stroke_id) + ": ";
-            if (!stroke_ids.insert(st.stroke_id).second) return fail(sw + "duplicate stroke_id");
-            if (st.created_at < last_created) return fail(sw + "strokes must be in ascending created_at order");
-            last_created = st.created_at;
-            if (st.created_at > static_cast<uint64_t>(MAX_JSON_INT)) return fail(sw + "created_at too large");
-            if (st.tool_type > ToolType::LINE_ERASER) return fail(sw + "tool type is reserved");
-            if (st.base_width == 0) return fail(sw + "base_width must be greater than 0");
-            if (st.flags & ~(StrokeFlags::HAS_TILT | StrokeFlags::HAS_AZIMUTH | StrokeFlags::NO_PRESSURE))
-                return fail(sw + "undefined flag bits must be 0");
-            if (st.samples.empty()) return fail(sw + "sample_count must be greater than 0");
-            const bool tilt = st.flags & StrokeFlags::HAS_TILT;
-            const bool az   = st.flags & StrokeFlags::HAS_AZIMUTH;
-            const bool nop  = st.flags & StrokeFlags::NO_PRESSURE;
-            uint32_t prev_t = 0;
-            for (const Sample& s : st.samples) {
-                if (s.timestamp < prev_t) return fail(sw + "timestamps must not decrease");
-                prev_t = s.timestamp;
-                if (nop && s.pressure != 255) return fail(sw + "NO_PRESSURE requires pressure 255");
-                if (tilt && (s.tilt_x < -90 || s.tilt_x > 90 || s.tilt_y < -90 || s.tilt_y > 90))
-                    return fail(sw + "tilt must be between -90 and 90");
-                if (az && s.azimuth > 35999) return fail(sw + "azimuth must be between 0 and 35999");
+        for (const Ink& item : page.ink) {
+            if (const Stroke* st = std::get_if<Stroke>(&item)) {
+                const std::string sw = where + "stroke " + std::to_string(st->stroke_id) + ": ";
+                if (!stroke_ids.insert(st->stroke_id).second) return fail(sw + "duplicate stroke_id");
+                if (st->layer < MIN_LAYER) return fail(sw + "layer must be between 1 and 65535");
+                if (st->created_at && *st->created_at > static_cast<uint64_t>(MAX_JSON_INT))
+                    return fail(sw + "created_at too large");
+                if (st->tool_type > ToolType::LINE_ERASER) return fail(sw + "tool type is reserved");
+                if (st->base_width == 0) return fail(sw + "base_width must be greater than 0");
+                if (st->flags & ~(StrokeFlags::HAS_TILT | StrokeFlags::HAS_AZIMUTH |
+                                  StrokeFlags::NO_PRESSURE | StrokeFlags::NO_TIMESTAMP |
+                                  StrokeFlags::HAS_CREATED_AT))
+                    return fail(sw + "undefined flag bits must be 0");
+                if (st->samples.empty()) return fail(sw + "sample_count must be greater than 0");
+                const bool tilt = st->flags & StrokeFlags::HAS_TILT;
+                const bool az   = st->flags & StrokeFlags::HAS_AZIMUTH;
+                const bool nop  = st->flags & StrokeFlags::NO_PRESSURE;
+                const bool nots = st->flags & StrokeFlags::NO_TIMESTAMP;
+                uint32_t prev_t = 0;
+                for (const Sample& s : st->samples) {
+                    if (!nots) {
+                        if (s.timestamp < prev_t) return fail(sw + "timestamps must not decrease");
+                        prev_t = s.timestamp;
+                    }
+                    if (nop && s.pressure != 255) return fail(sw + "NO_PRESSURE requires pressure 255");
+                    if (tilt && (s.tilt_x < -90 || s.tilt_x > 90 || s.tilt_y < -90 || s.tilt_y > 90))
+                        return fail(sw + "tilt must be between -90 and 90");
+                    if (az && s.azimuth > 35999) return fail(sw + "azimuth must be between 0 and 35999");
+                }
+            } else {
+                const Shape& sh = std::get<Shape>(item);
+                const std::string sw = where + "shape " + std::to_string(sh.stroke_id) + ": ";
+                if (!stroke_ids.insert(sh.stroke_id).second) return fail(sw + "duplicate stroke_id");
+                if (sh.layer < MIN_LAYER) return fail(sw + "layer must be between 1 and 65535");
+                if (sh.created_at && *sh.created_at > static_cast<uint64_t>(MAX_JSON_INT))
+                    return fail(sw + "created_at too large");
+                if (sh.tool_type > ToolType::HIGHLIGHTER) return fail(sw + "tool type must be between 0 and 3");
+                if (sh.base_width == 0) return fail(sw + "base_width must be greater than 0");
+                switch (sh.shape_type) {
+                    case ShapeType::ELLIPSE:
+                        if (sh.p[2] <= 0 || sh.p[3] <= 0) return fail(sw + "rx and ry must be greater than 0");
+                        if (sh.rotation > 35999) return fail(sw + "rotation must be between 0 and 35999");
+                        break;
+                    case ShapeType::RECTANGLE:
+                        if (sh.p[2] <= 0 || sh.p[3] <= 0) return fail(sw + "width and height must be greater than 0");
+                        if (sh.rotation > 35999) return fail(sw + "rotation must be between 0 and 35999");
+                        break;
+                    case ShapeType::LINE:
+                    case ShapeType::TRIANGLE:
+                        break;
+                    default:
+                        return fail(sw + "shape type is reserved");
+                }
             }
         }
 
-        // Sections 8.3, 8.4.1, 8.7
+        // Sections 5.6, 8.3, 8.3.1, 8.4.1, 8.7
         std::set<std::string> text_ids;
-        last_created = 0;
         for (const TextObject& t : page.text_objects) {
             const std::string tw = where + "text object " + t.id + ": ";
             if (!text_ids.insert(t.id).second) return fail(tw + "duplicate id");
-            if (t.created_at < last_created) return fail(tw + "text objects must be in ascending created_at order");
-            last_created = t.created_at;
-            if (t.created_at > static_cast<uint64_t>(MAX_JSON_INT)) return fail(tw + "created_at too large");
+            if (t.layer < MIN_LAYER) return fail(tw + "layer must be between 1 and 65535");
+            if (t.created_at && *t.created_at > static_cast<uint64_t>(MAX_JSON_INT))
+                return fail(tw + "created_at too large");
             if (t.width <= 0 || t.height <= 0 || t.font_size <= 0)
                 return fail(tw + "width, height and font_size must be positive");
             if (utf8_length(t.content) > MAX_CONTENT_CHARS) return fail(tw + "content too long");
@@ -151,11 +185,127 @@ bool validate_document(const Document& doc) {
             if (t.generic_family != "sans-serif" && t.generic_family != "serif" && t.generic_family != "monospace")
                 return fail(tw + "generic_family must be sans-serif, serif or monospace");
             if (!is_color_string(t.color)) return fail(tw + "invalid color");
-            if (t.layer != "back" && t.layer != "middle" && t.layer != "front")
-                return fail(tw + "layer must be back, middle or front");
+
+            if (t.spans.size() > MAX_SPANS) return fail(tw + "too many spans");
+            const size_t content_len = utf8_length(t.content);
+            int64_t prev_end = 0;
+            for (const Span& sp : t.spans) {
+                if (sp.start < 0 || sp.end <= sp.start) return fail(tw + "span end must be greater than start");
+                if (sp.start < prev_end) return fail(tw + "spans must be sorted and must not overlap");
+                if (static_cast<size_t>(sp.end) > content_len) return fail(tw + "span end exceeds the content");
+                prev_end = sp.end;
+                if (sp.font_size && *sp.font_size <= 0) return fail(tw + "span font_size must be positive");
+                if (sp.color && !is_color_string(*sp.color)) return fail(tw + "invalid span color");
+                if (sp.font_family && !sp.generic_family)
+                    return fail(tw + "span font_family requires generic_family");
+                if (sp.font_family && utf8_length(*sp.font_family) > MAX_STRING_CHARS)
+                    return fail(tw + "string too long");
+                if (sp.generic_family && *sp.generic_family != "sans-serif" &&
+                    *sp.generic_family != "serif" && *sp.generic_family != "monospace")
+                    return fail(tw + "span generic_family must be sans-serif, serif or monospace");
+            }
         }
     }
     return true;
+}
+
+void write_color(std::vector<uint8_t>& buf, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    buf.push_back(r);
+    buf.push_back(g);
+    buf.push_back(b);
+    buf.push_back(a);
+}
+
+// Chunk frame - Section 7.3
+void write_chunk(std::vector<uint8_t>& buf, uint16_t type, const std::vector<uint8_t>& body) {
+    write_le<uint16_t>(buf, type);
+    write_le<uint32_t>(buf, static_cast<uint32_t>(body.size()));
+    buf.insert(buf.end(), body.begin(), body.end());
+}
+
+// STROKE chunk body - Sections 7.4 and 7.5
+std::vector<uint8_t> build_stroke_body(const Stroke& stroke) {
+    std::vector<uint8_t> body;
+
+    // HAS_CREATED_AT is set if and only if created_at is written (Section 7.4.3).
+    uint16_t flags = stroke.flags & ~StrokeFlags::HAS_CREATED_AT;
+    if (stroke.created_at) flags |= StrokeFlags::HAS_CREATED_AT;
+
+    // Stroke header - Section 7.4.1
+    write_le<uint32_t>(body, stroke.stroke_id);
+    write_color(body, stroke.color_r, stroke.color_g, stroke.color_b, stroke.color_a);
+    write_le<uint16_t>(body, stroke.tool_type);
+    write_le<uint16_t>(body, stroke.base_width);
+    write_le<uint16_t>(body, flags);
+    write_le<uint16_t>(body, stroke.layer);
+    write_le<uint32_t>(body, static_cast<uint32_t>(stroke.samples.size()));
+    if (stroke.created_at) write_le<uint64_t>(body, *stroke.created_at);
+
+    bool has_tilt    = flags & StrokeFlags::HAS_TILT;
+    bool has_azimuth = flags & StrokeFlags::HAS_AZIMUTH;
+    bool no_timestamp = flags & StrokeFlags::NO_TIMESTAMP;
+
+    // Sample block - Section 7.5. Every sample, including the first one,
+    // stores the difference to the previous sample. For the first sample
+    // the previous values are zero (Section 7.5.2).
+    int64_t prev_x = 0, prev_y = 0, prev_pressure = 0;
+    int64_t prev_timestamp = 0;
+    int64_t prev_tilt_x = 0, prev_tilt_y = 0, prev_azimuth = 0;
+
+    for (const Sample& s : stroke.samples) {
+        write_zigzag_varint(body, s.x - prev_x);
+        write_zigzag_varint(body, s.y - prev_y);
+        write_zigzag_varint(body, s.pressure - prev_pressure);
+        if (!no_timestamp) {
+            write_varint(body, static_cast<uint64_t>(s.timestamp - prev_timestamp));  // plain varint
+            prev_timestamp = s.timestamp;
+        }
+        if (has_tilt) {
+            write_zigzag_varint(body, s.tilt_x - prev_tilt_x);
+            write_zigzag_varint(body, s.tilt_y - prev_tilt_y);
+        }
+        if (has_azimuth) {
+            write_zigzag_varint(body, s.azimuth - prev_azimuth);
+        }
+
+        prev_x         = s.x;
+        prev_y         = s.y;
+        prev_pressure  = s.pressure;
+        prev_tilt_x    = s.tilt_x;
+        prev_tilt_y    = s.tilt_y;
+        prev_azimuth   = s.azimuth;
+    }
+    return body;
+}
+
+// SHAPE chunk body - Section 7.9.2
+std::vector<uint8_t> build_shape_body(const Shape& shape) {
+    std::vector<uint8_t> body;
+
+    // Only HAS_CREATED_AT is defined for shapes.
+    uint16_t flags = shape.created_at ? StrokeFlags::HAS_CREATED_AT : 0;
+
+    write_le<uint32_t>(body, shape.stroke_id);
+    write_color(body, shape.color_r, shape.color_g, shape.color_b, shape.color_a);
+    write_le<uint16_t>(body, shape.tool_type);
+    write_le<uint16_t>(body, shape.base_width);
+    write_le<uint16_t>(body, flags);
+    write_le<uint16_t>(body, shape.layer);
+    if (shape.created_at) write_le<uint64_t>(body, *shape.created_at);
+    write_le<uint16_t>(body, shape.shape_type);
+
+    // Parameters - Section 7.9.4
+    size_t coords = 0;
+    bool has_rotation = false;
+    switch (shape.shape_type) {
+        case ShapeType::ELLIPSE:
+        case ShapeType::RECTANGLE: coords = 4; has_rotation = true; break;
+        case ShapeType::LINE:      coords = 4; break;
+        case ShapeType::TRIANGLE:  coords = 6; break;
+    }
+    for (size_t i = 0; i < coords; i++) write_le<int32_t>(body, shape.p[i]);
+    if (has_rotation) write_le<uint16_t>(body, shape.rotation);
+    return body;
 }
 
 std::vector<uint8_t> build_strokes_bin(const Page& page) {
@@ -166,65 +316,19 @@ std::vector<uint8_t> build_strokes_bin(const Page& page) {
     buf.push_back(0x4E);  // 'N'
     buf.push_back(0x46);  // 'F'
     buf.push_back(0x53);  // 'S'
-    write_le<uint16_t>(buf, 1);  // version
+    write_le<uint16_t>(buf, 2);  // version
     write_le<uint16_t>(buf, 0);  // reserved
 
-    for (const Stroke& stroke : page.strokes) {
-        std::vector<uint8_t> stroke_body;
-
-        // Stroke header - Section 7.4.1
-        write_le<uint32_t>(stroke_body, stroke.stroke_id);
-        write_le<uint64_t>(stroke_body, stroke.created_at);
-        stroke_body.push_back(stroke.color_r);
-        stroke_body.push_back(stroke.color_g);
-        stroke_body.push_back(stroke.color_b);
-        stroke_body.push_back(stroke.color_a);
-        write_le<uint16_t>(stroke_body, stroke.tool_type);
-        write_le<uint16_t>(stroke_body, stroke.base_width);
-        write_le<uint16_t>(stroke_body, stroke.flags);
-        write_le<uint32_t>(stroke_body, static_cast<uint32_t>(stroke.samples.size()));
-
-        bool has_tilt    = stroke.flags & StrokeFlags::HAS_TILT;
-        bool has_azimuth = stroke.flags & StrokeFlags::HAS_AZIMUTH;
-
-        // Sample block - Section 7.5. Every sample, including the first one,
-        // stores the difference to the previous sample. For the first sample
-        // the previous values are zero (Section 7.5.2).
-        int64_t prev_x = 0, prev_y = 0, prev_pressure = 0;
-        int64_t prev_timestamp = 0;
-        int64_t prev_tilt_x = 0, prev_tilt_y = 0, prev_azimuth = 0;
-
-        for (const Sample& s : stroke.samples) {
-            write_zigzag_varint(stroke_body, s.x - prev_x);
-            write_zigzag_varint(stroke_body, s.y - prev_y);
-            write_zigzag_varint(stroke_body, s.pressure - prev_pressure);
-            write_varint(stroke_body, static_cast<uint64_t>(s.timestamp - prev_timestamp));  // plain varint
-            if (has_tilt) {
-                write_zigzag_varint(stroke_body, s.tilt_x - prev_tilt_x);
-                write_zigzag_varint(stroke_body, s.tilt_y - prev_tilt_y);
-            }
-            if (has_azimuth) {
-                write_zigzag_varint(stroke_body, s.azimuth - prev_azimuth);
-            }
-
-            prev_x         = s.x;
-            prev_y         = s.y;
-            prev_pressure  = s.pressure;
-            prev_timestamp = s.timestamp;
-            prev_tilt_x    = s.tilt_x;
-            prev_tilt_y    = s.tilt_y;
-            prev_azimuth   = s.azimuth;
-        }
-
-        // Chunk frame - Section 7.3
-        write_le<uint16_t>(buf, 0x0001);  // STROKE
-        write_le<uint32_t>(buf, static_cast<uint32_t>(stroke_body.size()));
-        buf.insert(buf.end(), stroke_body.begin(), stroke_body.end());
+    // Ink is written in the order of page.ink (Section 7.6).
+    for (const Ink& item : page.ink) {
+        if (const Stroke* stroke = std::get_if<Stroke>(&item))
+            write_chunk(buf, 0x0001, build_stroke_body(*stroke));  // STROKE
+        else
+            write_chunk(buf, 0x0003, build_shape_body(std::get<Shape>(item)));  // SHAPE
     }
 
     // END chunk, empty body - Section 7.3.1
-    write_le<uint16_t>(buf, 0x0002);
-    write_le<uint32_t>(buf, 0);
+    write_chunk(buf, 0x0002, {});
 
     return buf;
 }
@@ -237,21 +341,23 @@ json build_manifest(const Document& doc) {
             {"order", page.order}
         });
     }
-    return {
+    json manifest = {
         {"onf_version", doc.onf_version},
         {"title",       doc.title},
         {"created_at",  doc.created_at},
         {"modified_at", doc.modified_at},
         {"pages",       pages_array}
     };
+    if (doc.generator) manifest["generator"] = *doc.generator;
+    return manifest;
 }
 
 json build_page_meta(const Page& page) {
     json text_objects_array = json::array();
     for (const TextObject& t : page.text_objects) {
-        text_objects_array.push_back({
+        json obj = {
             {"id",             t.id},
-            {"created_at",     t.created_at},
+            {"layer",          t.layer},
             {"x",              t.x},
             {"y",              t.y},
             {"width",          t.width},
@@ -262,9 +368,28 @@ json build_page_meta(const Page& page) {
             {"font_size",      t.font_size},
             {"color",          t.color},
             {"bold",           t.bold},
-            {"italic",         t.italic},
-            {"layer",          t.layer}
-        });
+            {"italic",         t.italic}
+        };
+        if (t.created_at) obj["created_at"] = *t.created_at;
+
+        // Spans - Section 8.3.1. Only the keys that are set are written.
+        if (!t.spans.empty()) {
+            json spans_array = json::array();
+            for (const Span& sp : t.spans) {
+                json span = {{"start", sp.start}, {"end", sp.end}};
+                if (sp.bold)           span["bold"]           = *sp.bold;
+                if (sp.italic)         span["italic"]         = *sp.italic;
+                if (sp.underline)      span["underline"]      = *sp.underline;
+                if (sp.strikethrough)  span["strikethrough"]  = *sp.strikethrough;
+                if (sp.color)          span["color"]          = *sp.color;
+                if (sp.font_size)      span["font_size"]      = *sp.font_size;
+                if (sp.font_family)    span["font_family"]    = *sp.font_family;
+                if (sp.generic_family) span["generic_family"] = *sp.generic_family;
+                spans_array.push_back(span);
+            }
+            obj["spans"] = spans_array;
+        }
+        text_objects_array.push_back(obj);
     }
 
     // All required background fields are written explicitly - Section 6.3.1

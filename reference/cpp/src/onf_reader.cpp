@@ -8,7 +8,9 @@
 #include <cctype>
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <regex>
+#include <variant>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -40,12 +42,18 @@ constexpr size_t   MAX_CONTENT_CHARS  = 1048576;
 // The reader implements ONF MAJOR version 0 (Section 10.2).
 constexpr int IMPLEMENTED_MAJOR = 0;
 // Binary format revision of strokes.bin that this reader implements (Section 7.2).
-constexpr uint16_t IMPLEMENTED_STROKES_VERSION = 1;
+constexpr uint16_t IMPLEMENTED_STROKES_VERSION = 2;
 
-// Size of the fixed stroke header inside a STROKE chunk body (Section 7.4.1).
-constexpr size_t STROKE_HEADER_SIZE = 26;
-// Every sample takes at least 4 bytes: x, y, pressure, timestamp (Section 7.3.2).
-constexpr size_t MIN_SAMPLE_SIZE = 4;
+// Size of the fixed header inside a STROKE chunk body (Section 7.4.1) and
+// inside a SHAPE chunk body (Section 7.9.2), and of the optional created_at.
+constexpr size_t STROKE_HEADER_SIZE = 20;
+constexpr size_t SHAPE_HEADER_SIZE  = 16;
+constexpr size_t CREATED_AT_SIZE    = 8;
+// A sample takes at least 3 bytes (x, y, pressure), or 4 bytes with the
+// timestamp field (Section 7.3.2).
+constexpr size_t MIN_SAMPLE_SIZE_NO_TIMESTAMP = 3;
+constexpr size_t MIN_SAMPLE_SIZE              = 4;
+constexpr size_t MAX_SPANS = 65535;  // Section 8.3.1
 
 // ---------------------------------------------------------------------------
 // Cursor over a byte buffer. All reads are bounds-checked; reading beyond the
@@ -138,7 +146,7 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
 
     if (version == 0)
         throw MalformedError("strokes.bin: version 0 is not valid");
-    if (version > IMPLEMENTED_STROKES_VERSION) {
+    if (version != IMPLEMENTED_STROKES_VERSION) {
         // Version mismatch event. The page is not parsed, even if the user has
         // confirmed opening a file with a higher MAJOR version (Section 7.2).
         throw MalformedError("strokes.bin: unsupported version " + std::to_string(version));
@@ -166,8 +174,73 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
             break;
         }
 
-        if (chunk_type != 0x0001) {
+        if (chunk_type != 0x0001 && chunk_type != 0x0003) {
             // Unknown or reserved chunk type: skip it (Section 10.5.2).
+            offset = body_end;
+            continue;
+        }
+
+        if (chunk_type == 0x0003) {
+            // --- SHAPE chunk body (Section 7.9) ---
+            if (chunk_length < SHAPE_HEADER_SIZE)
+                throw MalformedError("strokes.bin: SHAPE chunk shorter than the shape header");
+
+            Cursor c(buf, offset, body_end);
+            Shape shape;
+            shape.stroke_id  = c.le<uint32_t>();
+            shape.color_r    = c.u8();
+            shape.color_g    = c.u8();
+            shape.color_b    = c.u8();
+            shape.color_a    = c.u8();
+            shape.tool_type  = c.le<uint16_t>();
+            shape.base_width = c.le<uint16_t>();
+            uint16_t flags   = c.le<uint16_t>();
+            shape.layer      = c.le<uint16_t>();
+
+            if (flags & StrokeFlags::HAS_CREATED_AT) {
+                if (c.remaining() < CREATED_AT_SIZE)
+                    throw MalformedError("strokes.bin: SHAPE chunk shorter than the shape header");
+                shape.created_at = c.le<uint64_t>();
+            }
+            if (c.remaining() < 2)
+                throw MalformedError("strokes.bin: SHAPE chunk has no shape_type");
+            shape.shape_type = c.le<uint16_t>();
+
+            size_t param_size = 0;
+            switch (shape.shape_type) {
+                case ShapeType::ELLIPSE:
+                case ShapeType::RECTANGLE: param_size = 18; break;
+                case ShapeType::LINE:      param_size = 16; break;
+                case ShapeType::TRIANGLE:  param_size = 24; break;
+                default:
+                    // Unknown shape type: skip the chunk (Section 7.9.3).
+                    offset = body_end;
+                    continue;
+            }
+            if (c.remaining() < param_size)
+                throw MalformedError("strokes.bin: SHAPE chunk shorter than its parameters");
+
+            if (shape.layer == 0)
+                throw MalformedError("strokes.bin: layer is 0");
+            if (shape.base_width == 0)
+                throw MalformedError("strokes.bin: base_width is 0");
+            if (shape.tool_type == ToolType::LINE_ERASER)
+                throw MalformedError("strokes.bin: SHAPE with tool_type 4");
+            if (!stroke_ids.insert(shape.stroke_id).second)
+                throw MalformedError("strokes.bin: duplicate stroke_id");
+
+            size_t coords = (shape.shape_type == ShapeType::TRIANGLE) ? 6 : 4;
+            for (size_t i = 0; i < coords; i++) shape.p[i] = c.le<int32_t>();
+            if (shape.shape_type == ShapeType::ELLIPSE || shape.shape_type == ShapeType::RECTANGLE) {
+                shape.rotation = c.le<uint16_t>();
+                if (shape.p[2] <= 0 || shape.p[3] <= 0)
+                    throw MalformedError("strokes.bin: shape extent must be greater than 0");
+                if (shape.rotation > 35999)
+                    throw MalformedError("strokes.bin: shape rotation out of range");
+            }
+
+            // Bytes left in the chunk body after the parameters are ignored.
+            page.ink.push_back(std::move(shape));
             offset = body_end;
             continue;
         }
@@ -179,7 +252,6 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
         Cursor c(buf, offset, body_end);
         Stroke stroke;
         stroke.stroke_id  = c.le<uint32_t>();
-        stroke.created_at = c.le<uint64_t>();
         stroke.color_r    = c.u8();
         stroke.color_g    = c.u8();
         stroke.color_b    = c.u8();
@@ -187,26 +259,38 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
         stroke.tool_type  = c.le<uint16_t>();
         stroke.base_width = c.le<uint16_t>();
         stroke.flags      = c.le<uint16_t>();
+        stroke.layer      = c.le<uint16_t>();
         uint32_t sample_count = c.le<uint32_t>();
 
+        if (stroke.flags & StrokeFlags::HAS_CREATED_AT) {
+            if (c.remaining() < CREATED_AT_SIZE)
+                throw MalformedError("strokes.bin: STROKE chunk shorter than the stroke header");
+            stroke.created_at = c.le<uint64_t>();
+        }
+
+        if (stroke.layer == 0)
+            throw MalformedError("strokes.bin: layer is 0");
         if (!stroke_ids.insert(stroke.stroke_id).second)
             throw MalformedError("strokes.bin: duplicate stroke_id");
         if (sample_count == 0)
             throw MalformedError("strokes.bin: sample_count is 0");
         if (stroke.base_width == 0)
             throw MalformedError("strokes.bin: base_width is 0");
-        // Reject impossible sample counts before allocating memory.
-        if (sample_count > c.remaining() / MIN_SAMPLE_SIZE)
-            throw MalformedError("strokes.bin: sample_count exceeds the chunk body");
 
-        bool has_tilt    = stroke.flags & StrokeFlags::HAS_TILT;
-        bool has_azimuth = stroke.flags & StrokeFlags::HAS_AZIMUTH;
+        bool has_tilt     = stroke.flags & StrokeFlags::HAS_TILT;
+        bool has_azimuth  = stroke.flags & StrokeFlags::HAS_AZIMUTH;
+        bool no_timestamp = stroke.flags & StrokeFlags::NO_TIMESTAMP;
+
+        // Reject impossible sample counts before allocating memory.
+        const size_t min_sample = no_timestamp ? MIN_SAMPLE_SIZE_NO_TIMESTAMP : MIN_SAMPLE_SIZE;
+        if (sample_count > c.remaining() / min_sample)
+            throw MalformedError("strokes.bin: sample_count exceeds the chunk body");
 
         // --- Sample block (Section 7.5) ---
         // All samples, including the first one, are stored as deltas. For the
         // first sample the previous values are zero (Section 7.5.2). Values
         // are accumulated in 64-bit arithmetic and range-checked after every
-        // sample.
+        // sample. Fields that are not present are not checked.
         int64_t x = 0, y = 0, pressure = 0, timestamp = 0;
         int64_t tilt_x = 0, tilt_y = 0, azimuth = 0;
 
@@ -215,7 +299,8 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
             x        += read_zigzag_varint(c);
             y        += read_zigzag_varint(c);
             pressure += read_zigzag_varint(c);
-            timestamp += static_cast<int64_t>(c.varint(MAX_U32));  // plain varint
+            if (!no_timestamp)
+                timestamp += static_cast<int64_t>(c.varint(MAX_U32));  // plain varint
             if (has_tilt) {
                 tilt_x += read_zigzag_varint(c);
                 tilt_y += read_zigzag_varint(c);
@@ -227,7 +312,8 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
             check_range("x",         x,         INT32_MIN, INT32_MAX);
             check_range("y",         y,         INT32_MIN, INT32_MAX);
             check_range("pressure",  pressure,  0, 255);
-            check_range("timestamp", timestamp, 0, static_cast<int64_t>(MAX_U32));
+            if (!no_timestamp)
+                check_range("timestamp", timestamp, 0, static_cast<int64_t>(MAX_U32));
             check_range("tilt_x",    tilt_x,    -90, 90);
             check_range("tilt_y",    tilt_y,    -90, 90);
             check_range("azimuth",   azimuth,   0, 35999);
@@ -244,7 +330,7 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
         }
 
         // Bytes left in the chunk body after the last sample are ignored.
-        page.strokes.push_back(std::move(stroke));
+        page.ink.push_back(std::move(stroke));
         offset = body_end;
     }
 }
@@ -252,16 +338,43 @@ void parse_strokes_bin(const std::vector<uint8_t>& buf, Page& page) {
 // ---------------------------------------------------------------------------
 // JSON helpers - Sections 2.3.5 and 12.6
 // ---------------------------------------------------------------------------
-json parse_json(const std::vector<uint8_t>& buf) {
-    // The callback enforces the maximum nesting depth while parsing.
-    auto depth_guard = [](int depth, json::parse_event_t event, json&) {
-        if ((event == json::parse_event_t::object_start ||
-             event == json::parse_event_t::array_start) && depth >= MAX_JSON_DEPTH)
-            throw MalformedError("JSON nesting is too deep");
+// SAX handler that only tracks the nesting depth. It builds no tree, so
+// checking the depth takes linear time and constant memory (Section 12.6).
+struct DepthChecker : nlohmann::json_sax<json> {
+    int  depth    = 0;
+    bool too_deep = false;
+
+    bool open() {
+        if (++depth > MAX_JSON_DEPTH) { too_deep = true; return false; }
         return true;
-    };
+    }
+    bool start_object(std::size_t) override { return open(); }
+    bool start_array(std::size_t)  override { return open(); }
+    bool end_object() override { depth--; return true; }
+    bool end_array()  override { depth--; return true; }
+
+    bool null() override { return true; }
+    bool boolean(bool) override { return true; }
+    bool number_integer(json::number_integer_t) override { return true; }
+    bool number_unsigned(json::number_unsigned_t) override { return true; }
+    bool number_float(json::number_float_t, const std::string&) override { return true; }
+    bool string(std::string&) override { return true; }
+    bool binary(json::binary_t&) override { return true; }
+    bool key(std::string&) override { return true; }
+    // Syntax errors are reported by the parse below, with a precise message.
+    bool parse_error(std::size_t, const std::string&, const json::exception&) override { return false; }
+};
+
+json parse_json(const std::vector<uint8_t>& buf) {
+    // The nesting depth is checked first, so the parser below never builds a
+    // structure that is deeper than MAX_JSON_DEPTH. A parse callback would
+    // enforce the same limit, but makes nlohmann/json quadratic in the number
+    // of array elements.
+    DepthChecker checker;
+    json::sax_parse(buf.begin(), buf.end(), &checker);
+    if (checker.too_deep) throw MalformedError("JSON nesting is too deep");
     try {
-        return json::parse(buf.begin(), buf.end(), depth_guard);
+        return json::parse(buf.begin(), buf.end());
     } catch (const json::exception& e) {
         throw MalformedError(std::string("invalid JSON: ") + e.what());
     }
@@ -308,6 +421,49 @@ std::string get_color(const json& obj, const char* key) {
     return s;
 }
 
+// Reads the required layer field of a text object or asset placement (Section 5.6).
+uint16_t get_layer(const json& obj) {
+    return static_cast<uint16_t>(get_int(obj, "layer", 1, 65535));
+}
+
+// Optional typed fields of a span (Section 8.3.1). A missing key leaves the
+// optional empty; a key of the wrong type is malformed.
+std::optional<bool> opt_bool(const json& obj, const char* key) {
+    if (!obj.contains(key)) return std::nullopt;
+    return get_bool(obj, key);
+}
+
+// Parses and validates the spans array of a text object - Section 8.3.1
+void parse_spans(const json& spans, size_t content_length, std::vector<Span>& out) {
+    if (!spans.is_array()) throw MalformedError("spans must be an array");
+    if (spans.size() > MAX_SPANS) throw MalformedError("too many spans");
+
+    int64_t prev_end = 0;
+    for (const auto& j : spans) {
+        if (!j.is_object()) throw MalformedError("span must be an object");
+        Span sp;
+        sp.start = static_cast<int32_t>(get_int(j, "start", 0, INT32_MAX));
+        sp.end   = static_cast<int32_t>(get_int(j, "end",   0, INT32_MAX));
+        if (sp.end <= sp.start)             throw MalformedError("span end must be greater than start");
+        if (sp.start < prev_end)            throw MalformedError("spans must be sorted and must not overlap");
+        if (static_cast<size_t>(sp.end) > content_length)
+            throw MalformedError("span end exceeds the content");
+        prev_end = sp.end;
+
+        sp.bold          = opt_bool(j, "bold");
+        sp.italic        = opt_bool(j, "italic");
+        sp.underline     = opt_bool(j, "underline");
+        sp.strikethrough = opt_bool(j, "strikethrough");
+        if (j.contains("color"))     sp.color     = get_color(j, "color");
+        if (j.contains("font_size")) sp.font_size = static_cast<int32_t>(get_int(j, "font_size", 1, INT32_MAX));
+        if (j.contains("font_family"))    sp.font_family    = get_string(j, "font_family");
+        if (j.contains("generic_family")) sp.generic_family = get_string(j, "generic_family");
+        if (sp.font_family && !sp.generic_family)
+            throw MalformedError("span font_family requires generic_family");
+        out.push_back(std::move(sp));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // meta.json - Section 6.2
 // ---------------------------------------------------------------------------
@@ -334,7 +490,9 @@ void parse_page_meta(const json& meta, Page& page) {
         for (const auto& t : texts) {
             TextObject text;
             text.id             = get_string(t, "id");
-            text.created_at     = static_cast<uint64_t>(get_int(t, "created_at", 0, MAX_JSON_INT));
+            text.layer          = get_layer(t);
+            if (t.contains("created_at"))
+                text.created_at = static_cast<uint64_t>(get_int(t, "created_at", 0, MAX_JSON_INT));
             text.x              = static_cast<int32_t>(get_int(t, "x", INT32_MIN, INT32_MAX));
             text.y              = static_cast<int32_t>(get_int(t, "y", INT32_MIN, INT32_MAX));
             text.width          = static_cast<int32_t>(get_int(t, "width",  1, INT32_MAX));
@@ -346,20 +504,20 @@ void parse_page_meta(const json& meta, Page& page) {
             text.color          = get_color(t, "color");
             text.bold           = get_bool(t, "bold");
             text.italic         = get_bool(t, "italic");
-
-            // Optional layer. A missing field or an unknown value means
-            // "middle" (Sections 8.3 and 10.5.3).
-            text.layer = "middle";
-            if (t.contains("layer") && t["layer"].is_string()) {
-                std::string layer = t["layer"].get<std::string>();
-                if (layer == "back" || layer == "front") text.layer = layer;
-            }
+            if (t.contains("spans"))
+                parse_spans(t.at("spans"), utf8_length(text.content), text.spans);
             page.text_objects.push_back(std::move(text));
         }
 
         // Asset placements (Section 9) are not implemented by this reference
         // implementation, but the field is required and must be an array.
-        if (!meta.at("assets").is_array()) throw MalformedError("assets must be an array");
+        // The layer of every placement is validated (Section 5.6).
+        const json& assets = meta.at("assets");
+        if (!assets.is_array()) throw MalformedError("assets must be an array");
+        for (const auto& a : assets) {
+            if (!a.is_object()) throw MalformedError("asset placement must be an object");
+            get_layer(a);
+        }
     } catch (const json::exception& e) {
         // Missing key or wrong type
         throw MalformedError(std::string("invalid meta.json: ") + e.what());
@@ -476,6 +634,7 @@ std::vector<PageEntry> parse_manifest(const json& manifest, Document& doc) {
         if (!std::regex_match(doc.onf_version, version_re))
             throw MalformedError("onf_version has an invalid format");
         doc.title       = get_string(manifest, "title");
+        if (manifest.contains("generator")) doc.generator = get_string(manifest, "generator");
         doc.created_at  = get_string(manifest, "created_at");
         doc.modified_at = get_string(manifest, "modified_at");
         if (!std::regex_match(doc.created_at, time_re) || !std::regex_match(doc.modified_at, time_re))
@@ -566,7 +725,7 @@ bool read_onf(const std::string& input_path, Document& doc) {
                 std::cerr << "Page " << e.id << " is malformed: " << err.what() << std::endl;
                 page.readable = false;
                 page.error    = err.what();
-                page.strokes.clear();
+                page.ink.clear();
                 page.text_objects.clear();
             }
             doc.pages.push_back(std::move(page));
