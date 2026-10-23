@@ -13,6 +13,7 @@ The specification is at **v0.5.0**. This means:
 - Any 0.x release may break the format, including the binary layout, and files of one 0.x version may not be readable by another
 - No stability guarantees apply to any part of the format
 - External feedback is the most valuable thing this project needs right now
+- Every change to the specification is documented in [CHANGELOG.md](CHANGELOG.md), also for patch releases. A change to `SPECIFICATION.md` is not complete without an entry there
 
 ---
 ## What contributions are welcome

@@ -1,15 +1,12 @@
 # OpenNotes Format (ONF)
 **An open, vendor-neutral file format for handwritten digital notes.**
 
----
 
 ## The Problem
 
 Every major note-taking application today uses a proprietary file format. Your notes are locked to the app you use to write them. If the app is discontinued, the company disappears, or you simply want to switch — your data is at risk. There is no open standard for handwritten digital notes the way ODF exists for word processing or PDF exists for document exchange.
 
 ONF exists to fix that.
-
----
 
 ## What ONF Is
 
@@ -23,16 +20,12 @@ The format is designed to be:
 - **Forward-compatible.** Files written today will open correctly in applications built years from now.
 - **Physically grounded.** Coordinates map to real-world units. A note written on A4 is described in A4 dimensions, independent of screen or device.
 
----
-
 ## What ONF Is Not
 
 - A note-taking application. ONF is a format specification, not software.
 - A cloud service or sync protocol.
 - A replacement for PDF (which is a presentation format). ONF stores editable, living notes.
 - A finished standard. This project is in early development.
-
----
 
 ## Project Scope
 
@@ -52,7 +45,6 @@ Out of scope for v1.0 (may be addressed in future versions):
 
 - Real-time collaboration
 - End-to-end encryption
----
 
 ## Status
 
@@ -62,13 +54,11 @@ Out of scope for v1.0 (may be addressed in future versions):
 
 This repository is the **single source of truth** for the ONF specification. All normative decisions about the format are made here.
 
----
+The changes from version to version, including patch releases, are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
 The format is not yet ready for formal contributions, but feedback on the goals and scope is welcome via [Issues](../../issues).
-
----
 
 ## License
 
